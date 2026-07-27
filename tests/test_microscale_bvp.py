@@ -115,6 +115,17 @@ def test_microscale_bvp():
     u_0 = jnp.zeros(shape=(V * U))
 
     # Solve the boundary value problem
+
+    result = solve_bvp_PETSc(
+        vertices_vd=points,
+        element_batches=element_batches,
+        element_residual_func=linear_elasticity_residual,
+        boundary_conditions=bcs,
+        multipoint_constraints= None, #?????
+        u_0_g=u_0)
+
+    exit(1)
+
     result = timeit(
         solve_bvp,
         # timeit args
@@ -141,3 +152,5 @@ def test_microscale_bvp():
     # Write output
     mesh.point_data["u"] = u.reshape((points.shape[0], U))
     mesh.write(get_output("test_microscale_bvp_out.vtk"))
+
+test_microscale_bvp()
