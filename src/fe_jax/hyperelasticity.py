@@ -17,7 +17,7 @@ def st_venant_kirchhoff(F_dd: jnp.ndarray, material_params_m: jnp.ndarray):
         jnp.einsum("di,dj -> ij", F_dd, F_dd)
         - jnp.eye(F_dd.shape[1])
     )
-    stress_dd = elastic_isotropic(eps_dd,material_params_m)
+    stress_dd = elastic_isotropic(eps_dd,material_params_m)[0]
     return stress_dd
 
 
