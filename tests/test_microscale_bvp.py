@@ -1,5 +1,7 @@
 from helper import *
 import pytest
+import time
+import jetsci
 
 pytestmark = pytest.mark.slow
 
@@ -14,7 +16,7 @@ def test_microscale_bvp():
     # initialise_tracking()
 
     # Read in the mesh
-    mesh = meshio.read(get_mesh("microscale_2D_r0.vtk"))
+    mesh = meshio.read(get_mesh("microscale_2D_r2.vtk"))
     points = np.array(mesh.points, dtype=np.float32)[:, 0:2]
     cells = np.array(mesh.cells[0].data, dtype=np.uint64)
     mesh.cell_data["DomainIDs"][0] = np.array(
@@ -95,54 +97,100 @@ def test_microscale_bvp():
     matrix_mat_params_eqm, fiber_mat_params_eqm = get_properties()
     print(fiber_mat_params_eqm[0, 0, :])
 
-    element_batches = [
-        ElementBatch(
-            fe_type=fe_type,
-            n_dofs_per_basis=2,
-            connectivity_en=matrix_cells,
-            constitutive_model=elastic_isotropic,
-            material_params=matrix_mat_params_eqm,
-        ),
-        ElementBatch(
-            fe_type=fe_type,
-            n_dofs_per_basis=2,
-            connectivity_en=fiber_cells,
-            constitutive_model=elastic_orthotropic,
-            material_params=fiber_mat_params_eqm,
-        ),
-    ]
+    def make_element_batches():
+        return [
+            ElementBatch(
+                fe_type=fe_type,
+                n_dofs_per_basis=2,
+                connectivity_en=matrix_cells,
+                constitutive_model=elastic_isotropic,
+                material_params=matrix_mat_params_eqm,
+            ),
+            ElementBatch(
+                fe_type=fe_type,
+                n_dofs_per_basis=2,
+                connectivity_en=fiber_cells,
+                constitutive_model=elastic_orthotropic,
+                material_params=fiber_mat_params_eqm,
+            ),
+        ]
 
     u_0 = jnp.zeros(shape=(V * U))
 
     # Solve the boundary value problem
 
-    result = solve_bvp_PETSc(
+    def block_bvp_result(result):
+        u, residual, element_batches = result
+        u.block_until_ready()
+        residual.block_until_ready()
+        return u, residual, element_batches
+
+    def time_solve(label, solve_func, n_calls=3):
+        start = time.perf_counter()
+        result = block_bvp_result(solve_func())
+        first_call_time = time.perf_counter() - start
+
+        times = []
+        for _ in range(n_calls):
+            start = time.perf_counter()
+            result = block_bvp_result(solve_func())
+            times.append(time.perf_counter() - start)
+
+        print(
+            f"{label}: first call {first_call_time:.6f} sec, "
+            f"avg {sum(times) / len(times):.6f} sec "
+            f"(n={n_calls}, min={min(times):.6f}, max={max(times):.6f})"
+        )
+        return result, first_call_time, times
+
+    petsc_solver = build_bvp_solver(
         vertices_vd=points,
-        element_batches=element_batches,
+        element_batches=make_element_batches(),
         element_residual_func=linear_elasticity_residual,
         boundary_conditions=bcs,
-        multipoint_constraints= None, #?????
-        u_0_g=u_0)
-
-    exit(1)
-
-    result = timeit(
-        solve_bvp,
-        # timeit args
-        n_calls=3,
-        # args passed along to solve_bvp
-        element_residual_func=linear_elasticity_residual,
-        vertices_vd=points,
-        element_batches=element_batches,
+        multipoint_constraints=None,
         u_0_g=u_0,
-        boundary_conditions=bcs,
-        solver_options=SolverOptions(
-            linear_solve_type=LinearSolverType.CG_JAX_SCIPY_W_INFO,
-            linear_precond_type=PreconditionerType.JACOBI,
+        options=UnifiedBVPOptions(
+            backend=BVPBackend.PETSC,
+            petsc_solver_options=jetsci.SolverOptions(
+                nonlinear_solver_type=jetsci.NonlinearSolverType.PETSC_SNES,
+                linear_precond_type=jetsci.PETScPreconditionerType.JACOBI,
+                linear_solve_type=jetsci.PETScLinearSolverType.CG,
+                nonlinear_absolute_tol=1e-14,
+                linear_max_iter=10000,
+                linear_relative_tol=1e-6,
+                linear_absolute_tol=1e-14,
+            ),
         ),
     )
-    u, residual, element_batches = result[0]
-    print("|R| = ", jnp.linalg.norm(residual))
+    jax_solver = build_bvp_solver(
+        vertices_vd=points,
+        element_batches=make_element_batches(),
+        element_residual_func=linear_elasticity_residual,
+        boundary_conditions=bcs,
+        multipoint_constraints=None,
+        u_0_g=u_0,
+        options=UnifiedBVPOptions(
+            backend=BVPBackend.JAX,
+            jax_solver_options=SolverOptions(
+                linear_solve_type=LinearSolverType.CG_JAX_SCIPY_W_INFO,
+                linear_precond_type=PreconditionerType.JACOBI,
+            ),
+        ),
+    )
+
+    try:
+        petsc_result, _, _ = time_solve("PETSc UnifiedBVPSolver", petsc_solver.solve, n_calls=3)
+    finally:
+        petsc_solver.destroy()
+
+    jax_result, _, _ = time_solve("JAX UnifiedBVPSolver", jax_solver.solve, n_calls=2)
+    u, residual, element_batches = jax_result
+    u_petsc, residual_petsc, _ = petsc_result
+
+    print("|R| PETSc = ", jnp.linalg.norm(residual_petsc))
+    print("|R| JAX   = ", jnp.linalg.norm(residual))
+    print("|u_petsc - u_jax| = ", jnp.linalg.norm(u_petsc - u))
 
     # Make sure the solution matches at the Dirichlet BCs
     dirichlet_dofs = np.array([U * bc.index + bc.component for bc in bcs])

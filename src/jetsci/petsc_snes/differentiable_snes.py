@@ -296,6 +296,11 @@ def _register_primitive_context(primitive: "DifferentiableSNESPrimitive") -> Non
     _PRIMITIVE_CONTEXTS[primitive.solver_key] = primitive
 
 
+def unregister_primitive_context(solver_key: int) -> None:
+    """Remove a registered primitive context when its PETSc solver is destroyed."""
+    _PRIMITIVE_CONTEXTS.pop(solver_key, None)
+
+
 def _differentiable_snes_solve_impl(phi, x0, *, solver_key: int):
     primitive = _primitive_context(solver_key)
     if primitive.solver_key is not None and primitive.solver_key != solver_key:
@@ -321,8 +326,6 @@ def _differentiable_snes_solve_jvp(primals, tangents, *, solver_key: int):
     total_start = perf_counter()
     phi, x0 = primals
     phi_dot, _x0_dot = tangents
-
-    jax.debug.print("we're in here actually")
 
     primitive = _primitive_context(solver_key)
     hook_start = perf_counter()
