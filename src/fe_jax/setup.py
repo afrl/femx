@@ -308,7 +308,7 @@ def transform_element_node_to_global_sum(
     """
     U = v_en.shape[2]
     V, EN = assembly_map.shape
-    v_g = jnp.empty((V, U)).at[assembly_map.indices, ...].add(v_en, mode="drop")
+    v_g = jnp.zeros((V, U)).at[assembly_map.indices, ...].add(v_en, mode="drop")
     return v_g
 
 
