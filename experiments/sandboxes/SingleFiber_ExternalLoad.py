@@ -175,7 +175,8 @@ def get_args():
         'NeumannForce':[(i+1)*1e5 for i in range(10)],
         # 'NeumannForce':[i*1e4 for i in range(10,101)],
         # 'filename_base':'ContactStiffnessModel/Linear_NeumannTest',
-        'filename_base':  'PseudoTimeNeumann_in_y/incrementalLoad',
+        # 'filename_base':  'PseudoTimeNeumann_in_y/incrementalLoad',
+        'filename_base': None,
         'contact_params': ContactParams(
             self_adjacency_block       = 10000,
             contact_constitutive_model = elastic_contact_truss_piecewise_quadratic,
