@@ -309,11 +309,12 @@ def elastic_truss(
         eps_a = (L_cur**2 - L_ref**2)/(2*L_ref**2)
         eps_total_internal = eps_accum + eps_a + 2*eps_accum*eps_a
     elif strain_measure == StrainMeasure.LINEAR:
-        eps_a = jnp.einsum("i,ij,j->", l_ref, eps_dd, l_ref)
+        eps_a = jnp.einsum("i,ij,j->", l_cur, eps_dd, l_cur)
         eps_total_internal = eps_accum + eps_a
     elif strain_measure == StrainMeasure.ENGINEERING:
         eps_a = L_cur / L_ref - 1.0
         eps_total_internal = (1.0 + eps_accum) * (1.0 + eps_a) - 1.0
+        # eps_total_internal = eps_accum + eps_a
     elif strain_measure == StrainMeasure.LOGARITHMIC:
         eps_a = jnp.log(L_cur/L_ref)
         eps_total_internal = eps_accum + eps_a
