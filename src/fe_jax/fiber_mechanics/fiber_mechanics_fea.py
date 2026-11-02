@@ -533,7 +533,7 @@ def solve_fiber_mechanics_bvp(
                         u_0_g=None,
                     )
 
-            with profile_segment(StandardSegment.LINEAR_SOLVE, step_index=i):
+            with profile_segment(StandardSegment.NONLINEAR_SOLVE, step_index=i):
                 du_truss, residual_truss, element_batches_truss = solve_preprocessed_bvp(
                     preprocessed=preprocessed_bvp,
                     vertices_vd=vertices_vd,
@@ -546,7 +546,7 @@ def solve_fiber_mechanics_bvp(
                     time_step=i,
                 )
         else:
-            with profile_segment(StandardSegment.LINEAR_SOLVE, step_index=i):
+            with profile_segment(StandardSegment.NONLINEAR_SOLVE, step_index=i):
                 du_truss, residual_truss, element_batches_truss = solve_bvp(
                     element_residual_func=linear_truss_residual,
                     vertices_vd=vertices_vd,

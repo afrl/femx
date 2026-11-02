@@ -238,14 +238,14 @@ def run_tension(
             # linear_precond_type=PreconditionerType.JACOBI,
             # linear_solve_type=LinearSolverType.BICGSTAB_JAX_SCIPY,
             # linear_solve_type=LinearSolverType.SPSOLVE_PYPARDISO,
-            nonlinear_max_iter=1,
-            linear_max_iter=1,
+            nonlinear_max_iter=15,
+            linear_max_iter=200,
             # damp_Newton_diag=1.0,
             # nonlinear_relative_tol=.0001,
             # max_linear_displacement=0.5,
             max_backtracks=6,
             # linear_absolute_tol=3.16e-3,
-            # max_linear_displacement=min(dx,fabric.diameters.min())/2,
+            max_linear_displacement=min(dx,fabric.diameters.min())/1,
         ),
         plot_convergence=False,
         filename_base=filename_base,
@@ -253,6 +253,7 @@ def run_tension(
         blow_up_threshold=10,
         pre_strain=pre_strain,
         debug_info=debug_info,
+        strain_measure=StrainMeasure.LINEAR,
     )
     u = u.reshape((-1,3))
     # fabric.points = fabric.points + u[:fabric_n,:]
@@ -264,11 +265,11 @@ def run_tension(
 
 args = {
     'fabric':read_fabric("experiments/initial_single_fiber/initial_single_fiber.fab"),
-    # 'filename_base': 'FabricExample/Oct20/quadratic_CG_take2',
+    'filename_base': 'FabricExample/Nov2/quadratic_CG_LinearStrainMeasure',
     # 'filename_base': 'Sep10_JacSymmetryTest/AngleInterlock_quadratic_CG_NoForcedSymmetry',
-    'filename_base': None,
-    'pseudoT': 1,
-    'pre_strain':0.141373887*20,
+    # 'filename_base': None,
+    'pseudoT': 5,
+    # 'pre_strain':0.141373887*20,
     # 'pre_strain':[0.141373887*i for i in range(6,36,6)],
     'contact_params': ContactParams(
         self_adjacency_block    = 10000,

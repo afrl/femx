@@ -464,6 +464,7 @@ class StandardSegment:
     CONTACT_SEARCH = "CONTACT_SEARCH"
     ELEMENT_ASSEMBLY = "ELEMENT_ASSEMBLY"
     LINEAR_SOLVE = "LINEAR_SOLVE"
+    NONLINEAR_SOLVE = "NONLINEAR_SOLVE"
     POST_PROCESS = "POST_PROCESS"
 
 
@@ -600,25 +601,40 @@ class SegmentProfiler:
         if total_profile_time <= 0:
             total_profile_time = max(sum(s.duration for s in self.spans), 1e-9)
 
-        for span in self.spans:
-            if span.name not in summary:
-                summary[span.name] = {
-                    "count": 0,
-                    "total_time": 0.0,
-                    "jit_time": 0.0,
-                    "min_time": float("inf"),
-                    "max_time": 0.0,
-                }
-            s = summary[span.name]
-            s["count"] += 1
-            s["total_time"] += span.duration
-            s["jit_time"] += span.jit_time
-            s["min_time"] = min(s["min_time"], span.duration)
-            s["max_time"] = max(s["max_time"], span.duration)
+        durations_by_name: Dict[str, List[float]] = {}
+        jit_by_name: Dict[str, float] = {}
 
-        for name, s in summary.items():
-            s["avg_time"] = s["total_time"] / s["count"] if s["count"] > 0 else 0.0
-            s["percent"] = (s["total_time"] / total_profile_time) * 100.0
+        for span in self.spans:
+            if span.name not in durations_by_name:
+                durations_by_name[span.name] = []
+                jit_by_name[span.name] = 0.0
+            durations_by_name[span.name].append(span.duration)
+            jit_by_name[span.name] += span.jit_time
+
+        for name, durations in durations_by_name.items():
+            count = len(durations)
+            total_time = sum(durations)
+            cold_time = durations[0] if count > 0 else 0.0
+            warm_calls = count - 1
+            warm_time = sum(durations[1:]) if count > 1 else 0.0
+            warm_avg = (warm_time / warm_calls) if warm_calls > 0 else None
+            warm_min = min(durations[1:]) if count > 1 else None
+            warm_max = max(durations[1:]) if count > 1 else None
+
+            summary[name] = {
+                "count": count,
+                "total_time": total_time,
+                "cold_time": cold_time,
+                "warm_time": warm_time,
+                "warm_avg": warm_avg,
+                "warm_min": warm_min,
+                "warm_max": warm_max,
+                "jit_time": jit_by_name[name],
+                "min_time": min(durations),
+                "max_time": max(durations),
+                "avg_time": total_time / count if count > 0 else 0.0,
+                "percent": (total_time / total_profile_time) * 100.0,
+            }
 
         return summary
 
@@ -631,19 +647,21 @@ class SegmentProfiler:
         )
 
         lines = []
-        lines.append("=" * 82)
-        lines.append(f" {self.name} (Total Elapsed: {total_time:.4f}s)".center(82))
-        lines.append("=" * 82)
+        width = 96
+        lines.append("=" * width)
+        lines.append(f" {self.name} (Total Elapsed: {total_time:.4f}s)".center(width))
+        lines.append("=" * width)
         lines.append(
-            f"{'Segment':<22} | {'Calls':<6} | {'Total (s)':<10} | {'Avg (s)':<10} | {'% Total':<8} | {'JIT (s)':<8}"
+            f"{'Segment':<20} | {'Calls':<6} | {'Total (s)':<10} | {'Cold (s)':<10} | {'Warm Avg (s)':<12} | {'% Total':<8} | {'JIT (s)':<8}"
         )
-        lines.append("-" * 82)
+        lines.append("-" * width)
 
         for name, s in summary.items():
+            warm_avg_str = f"{s['warm_avg']:.4f}" if s["warm_avg"] is not None else "-"
             lines.append(
-                f"{name:<22} | {s['count']:<6d} | {s['total_time']:<10.4f} | {s['avg_time']:<10.4f} | {s['percent']:<7.1f}% | {s['jit_time']:<8.4f}"
+                f"{name:<20} | {s['count']:<6d} | {s['total_time']:<10.4f} | {s['cold_time']:<10.4f} | {warm_avg_str:<12} | {s['percent']:<7.1f}% | {s['jit_time']:<8.4f}"
             )
-        lines.append("=" * 82)
+        lines.append("=" * width)
         return "\n".join(lines)
 
     def print_summary(self):
@@ -686,11 +704,12 @@ class SegmentProfiler:
         summary = self.get_summary()
         with open(filepath, "w") as f:
             f.write(
-                "segment,calls,total_time_s,avg_time_s,percent_total,jit_time_s\n"
+                "segment,calls,total_time_s,cold_time_s,warm_avg_time_s,percent_total,jit_time_s\n"
             )
             for name, s in summary.items():
+                warm_avg_str = f"{s['warm_avg']:.6f}" if s["warm_avg"] is not None else ""
                 f.write(
-                    f"{name},{s['count']},{s['total_time']:.6f},{s['avg_time']:.6f},{s['percent']:.2f},{s['jit_time']:.6f}\n"
+                    f"{name},{s['count']},{s['total_time']:.6f},{s['cold_time']:.6f},{warm_avg_str},{s['percent']:.2f},{s['jit_time']:.6f}\n"
                 )
 
     def to_dataframe(self):
@@ -703,7 +722,8 @@ class SegmentProfiler:
                     "segment": name,
                     "calls": s["count"],
                     "total_time_s": s["total_time"],
-                    "avg_time_s": s["avg_time"],
+                    "cold_time_s": s["cold_time"],
+                    "warm_avg_time_s": s["warm_avg"],
                     "percent_total": s["percent"],
                     "jit_time_s": s["jit_time"],
                 }
