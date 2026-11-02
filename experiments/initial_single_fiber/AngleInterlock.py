@@ -295,3 +295,17 @@ def get_debug():
         filename = args['filename_base'] + '.h5'
     )
     return debug_info
+
+
+if __name__ == "__main__":
+    from fe_jax.profiling import SegmentProfiler
+
+    print("Running AngleInterlock benchmark with SegmentProfiler...")
+    with SegmentProfiler(name="AngleInterlock Benchmark", sync_jax=True) as prof:
+        u, fab, dyn_bcs = run_tension(**args)
+
+    print("\n")
+    prof.print_summary()
+    prof.to_json("prof/angle_interlock_profile.json")
+    print("\nSaved profile JSON to prof/angle_interlock_profile.json")
+

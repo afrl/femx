@@ -193,12 +193,13 @@ def run_singleFiber(
         boundary_conditions=dyn_bcs,
         contact_options=contact_params,
         solver_options=SolverOptions(
-            # linear_solve_type=LinearSolgccverType.CG_JAX_SCIPY_W_INFO,
+            linear_solve_type=LinearSolverType.CG_JAX_SCIPY_W_INFO,
             # linear_precond_type=PreconditionerType.JACOBI,
-            linear_solve_type=LinearSolverType.SPSOLVE_PYPARDISO,
+            # linear_solve_type=LinearSolverType.SPSOLVE_PYPARDISO,
             nonlinear_max_iter=300,
-            nonlinear_absolute_tol=1e-8,
-            nonlinear_relative_tol=1e-8,
+            # nonlinear_absolute_tol=1e-8,
+            # nonlinear_relative_tol=1e-8,
+            linear_absolute_tol = 1e-12,
             linear_max_iter=500,
             max_linear_displacement=min(min_dist,fabric.diameters[0])/2,
             max_backtracks = 8,
@@ -262,7 +263,7 @@ def get_args(incrementalLoads=10, strain_measure=StrainMeasure.GREEN_LAGRANGE, N
 # X20 = run_singleFiber(**args20)
 # print(f'drift error: {np.max(np.abs(X10[0]-X20[0]))}')
 
-def nonlinear_solve_summary(strain_measures=('Linear','GreenLagrange', 'Logarithmic', 'Engineering'), load_steps_to_plot=(20, 40, 60)):
+def nonlinear_solve_summary(strain_measures=('Linear','GreenLagrange', 'Logarithmic', 'Engineering'), load_steps_to_plot=(20, 40, 60),incremental_loads = range(2, 61)):
     if strain_measures is None:
         strain_measures = ('GreenLagrange', 'Logarithmic', 'Engineering')
     elif isinstance(strain_measures, str):
@@ -270,7 +271,7 @@ def nonlinear_solve_summary(strain_measures=('Linear','GreenLagrange', 'Logarith
 
     plt.close()
     fig, ax = plt.subplots(1, 2, figsize=(14, 5))
-    incremental_loads = range(2, 61)
+    
 
     linestyle_pool = ['solid', 'dashed', 'dashdot', 'dotted']
     linestyles = [linestyle_pool[i % len(linestyle_pool)] for i in range(len(strain_measures))]
@@ -294,7 +295,7 @@ def nonlinear_solve_summary(strain_measures=('Linear','GreenLagrange', 'Logarith
         avg_steps = []
         el_data = '_40elements'
         for i in incremental_loads:
-            f = h5py.File(f'debug/singleFiberExternalLoad/LoweredTolerance_{strain_measure}_{i}loadsteps{el_data}.h5')
+            f = h5py.File(f'debug/singleFiberExternalLoad/CG_{strain_measure}_{i}loadsteps{el_data}.h5')
             nls = get_num_nonlinear_solves(f)
             min_steps.append(nls.min())
             max_steps.append(nls.max())
@@ -308,7 +309,7 @@ def nonlinear_solve_summary(strain_measures=('Linear','GreenLagrange', 'Logarith
         ax[0].semilogy(incremental_loads, avg_steps, color='tab:purple', linestyle=ls)
 
         for step_count, c in zip(load_steps_to_plot, step_colors):
-            f = h5py.File(f'debug/singleFiberExternalLoad/LoweredTolerance_{strain_measure}_{step_count}loadsteps{el_data}.h5')
+            f = h5py.File(f'debug/singleFiberExternalLoad/CG_{strain_measure}_{step_count}loadsteps{el_data}.h5')
             nls = get_num_nonlinear_solves(f)
             ax[1].semilogy(range(1, step_count + 1), nls, color=c, linestyle=ls)
             f.close()
@@ -344,6 +345,6 @@ def nonlinear_solve_summary(strain_measures=('Linear','GreenLagrange', 'Logarith
     ax[1].legend(handles=handles_1)
 
     plt.tight_layout()
-    plt.savefig(f'scratch/LoweredTolerance_{el_data}_NonlinearSolves_vs_IncrementalLoad.png')
+    plt.savefig(f'scratch/CG_{el_data}_NonlinearSolves_vs_IncrementalLoad.png')
     plt.close()
 # nonlinear_solve_summary()

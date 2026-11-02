@@ -448,3 +448,291 @@ def stop_memory_profile(label=None):
     prof_log = os.path.join("prof", f"memory_profile.log")
     with open(prof_log, "a") as f:
         f.write(f"{json.dumps(results)}\n")
+
+
+from dataclasses import dataclass, field
+from contextvars import ContextVar
+from typing import Optional, List, Dict, Any, Generator, Union
+
+_ACTIVE_PROFILER: ContextVar[Optional["SegmentProfiler"]] = ContextVar(
+    "_ACTIVE_PROFILER", default=None
+)
+
+
+class StandardSegment:
+    IO_SETUP = "IO_SETUP"
+    CONTACT_SEARCH = "CONTACT_SEARCH"
+    ELEMENT_ASSEMBLY = "ELEMENT_ASSEMBLY"
+    LINEAR_SOLVE = "LINEAR_SOLVE"
+    POST_PROCESS = "POST_PROCESS"
+
+
+@dataclass
+class SegmentSpan:
+    name: str
+    start_time: float
+    end_time: float
+    duration: float
+    jit_time: float = 0.0
+    step_index: Optional[int] = None
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+
+def _sync_jax_devices():
+    """Forces JAX device queue synchronization."""
+    try:
+        jax.effects_barrier()
+    except Exception:
+        try:
+            jax.block_until_ready(jax.numpy.zeros((1,)))
+        except Exception:
+            pass
+
+
+class SegmentProfiler:
+    """
+    Segmented time profiler for tracking execution stages in simulation pipelines.
+    Supports JAX stream synchronization, JIT overhead isolation, and structured reporting.
+    """
+
+    def __init__(
+        self,
+        name: str = "FE-JAX Simulation Profile",
+        sync_jax: bool = True,
+        enable_step_annotations: bool = True,
+    ):
+        self.name = name
+        self.sync_jax = sync_jax
+        self.enable_step_annotations = enable_step_annotations
+        self.spans: List[SegmentSpan] = []
+        self._token = None
+        self.start_time: Optional[float] = None
+        self.end_time: Optional[float] = None
+
+    def __enter__(self):
+        self._token = _ACTIVE_PROFILER.set(self)
+        if self.sync_jax:
+            _sync_jax_devices()
+        self.start_time = time.perf_counter()
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        if self.sync_jax:
+            _sync_jax_devices()
+        self.end_time = time.perf_counter()
+        if self._token is not None:
+            _ACTIVE_PROFILER.reset(self._token)
+            self._token = None
+
+    @contextmanager
+    def segment(
+        self,
+        name: str,
+        sync_jax: Optional[bool] = None,
+        step_index: Optional[int] = None,
+        jit_time: float = 0.0,
+        **metadata,
+    ) -> Generator[None, None, None]:
+        do_sync = self.sync_jax if sync_jax is None else sync_jax
+
+        step_annotation = None
+        if self.enable_step_annotations and hasattr(
+            jax.profiler, "StepTraceAnnotation"
+        ):
+            try:
+                step_annotation = jax.profiler.StepTraceAnnotation(name)
+            except Exception:
+                step_annotation = None
+
+        if step_annotation:
+            step_annotation.__enter__()
+
+        try:
+            if do_sync:
+                _sync_jax_devices()
+            t0 = time.perf_counter()
+            yield
+            if do_sync:
+                _sync_jax_devices()
+            t1 = time.perf_counter()
+
+            span = SegmentSpan(
+                name=name,
+                start_time=t0,
+                end_time=t1,
+                duration=t1 - t0,
+                jit_time=jit_time,
+                step_index=step_index,
+                metadata=metadata,
+            )
+            self.spans.append(span)
+        finally:
+            if step_annotation:
+                step_annotation.__exit__(None, None, None)
+
+    def record_span(
+        self,
+        name: str,
+        duration: float,
+        jit_time: float = 0.0,
+        step_index: Optional[int] = None,
+        **metadata,
+    ):
+        now = time.perf_counter()
+        span = SegmentSpan(
+            name=name,
+            start_time=now - duration,
+            end_time=now,
+            duration=duration,
+            jit_time=jit_time,
+            step_index=step_index,
+            metadata=metadata,
+        )
+        self.spans.append(span)
+
+    def get_summary(self) -> Dict[str, Dict[str, Any]]:
+        summary = {}
+        total_profile_time = (
+            (self.end_time - self.start_time)
+            if (self.start_time and self.end_time)
+            else sum(s.duration for s in self.spans)
+        )
+        if total_profile_time <= 0:
+            total_profile_time = max(sum(s.duration for s in self.spans), 1e-9)
+
+        for span in self.spans:
+            if span.name not in summary:
+                summary[span.name] = {
+                    "count": 0,
+                    "total_time": 0.0,
+                    "jit_time": 0.0,
+                    "min_time": float("inf"),
+                    "max_time": 0.0,
+                }
+            s = summary[span.name]
+            s["count"] += 1
+            s["total_time"] += span.duration
+            s["jit_time"] += span.jit_time
+            s["min_time"] = min(s["min_time"], span.duration)
+            s["max_time"] = max(s["max_time"], span.duration)
+
+        for name, s in summary.items():
+            s["avg_time"] = s["total_time"] / s["count"] if s["count"] > 0 else 0.0
+            s["percent"] = (s["total_time"] / total_profile_time) * 100.0
+
+        return summary
+
+    def summary_table(self) -> str:
+        summary = self.get_summary()
+        total_time = (
+            (self.end_time - self.start_time)
+            if (self.start_time and self.end_time)
+            else sum(s["total_time"] for s in summary.values())
+        )
+
+        lines = []
+        lines.append("=" * 82)
+        lines.append(f" {self.name} (Total Elapsed: {total_time:.4f}s)".center(82))
+        lines.append("=" * 82)
+        lines.append(
+            f"{'Segment':<22} | {'Calls':<6} | {'Total (s)':<10} | {'Avg (s)':<10} | {'% Total':<8} | {'JIT (s)':<8}"
+        )
+        lines.append("-" * 82)
+
+        for name, s in summary.items():
+            lines.append(
+                f"{name:<22} | {s['count']:<6d} | {s['total_time']:<10.4f} | {s['avg_time']:<10.4f} | {s['percent']:<7.1f}% | {s['jit_time']:<8.4f}"
+            )
+        lines.append("=" * 82)
+        return "\n".join(lines)
+
+    def print_summary(self):
+        print(self.summary_table())
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "name": self.name,
+            "start_time": self.start_time,
+            "end_time": self.end_time,
+            "total_duration": (
+                (self.end_time - self.start_time)
+                if (self.start_time and self.end_time)
+                else sum(s.duration for s in self.spans)
+            ),
+            "summary": self.get_summary(),
+            "timeline": [
+                {
+                    "name": s.name,
+                    "start_time": s.start_time,
+                    "end_time": s.end_time,
+                    "duration": s.duration,
+                    "jit_time": s.jit_time,
+                    "step_index": s.step_index,
+                    "metadata": s.metadata,
+                }
+                for s in self.spans
+            ],
+        }
+
+    def to_json(self, filepath: Union[str, Path]):
+        filepath = Path(filepath)
+        filepath.parent.mkdir(parents=True, exist_ok=True)
+        with open(filepath, "w") as f:
+            json.dump(self.to_dict(), f, indent=2)
+
+    def to_csv(self, filepath: Union[str, Path]):
+        filepath = Path(filepath)
+        filepath.parent.mkdir(parents=True, exist_ok=True)
+        summary = self.get_summary()
+        with open(filepath, "w") as f:
+            f.write(
+                "segment,calls,total_time_s,avg_time_s,percent_total,jit_time_s\n"
+            )
+            for name, s in summary.items():
+                f.write(
+                    f"{name},{s['count']},{s['total_time']:.6f},{s['avg_time']:.6f},{s['percent']:.2f},{s['jit_time']:.6f}\n"
+                )
+
+    def to_dataframe(self):
+        import pandas as pd
+
+        data = []
+        for name, s in self.get_summary().items():
+            data.append(
+                {
+                    "segment": name,
+                    "calls": s["count"],
+                    "total_time_s": s["total_time"],
+                    "avg_time_s": s["avg_time"],
+                    "percent_total": s["percent"],
+                    "jit_time_s": s["jit_time"],
+                }
+            )
+        return pd.DataFrame(data)
+
+
+def get_active_profiler() -> Optional[SegmentProfiler]:
+    return _ACTIVE_PROFILER.get()
+
+
+@contextmanager
+def profile_segment(
+    name: str,
+    sync_jax: Optional[bool] = None,
+    step_index: Optional[int] = None,
+    jit_time: float = 0.0,
+    **metadata,
+) -> Generator[None, None, None]:
+    active = get_active_profiler()
+    if active is not None:
+        with active.segment(
+            name,
+            sync_jax=sync_jax,
+            step_index=step_index,
+            jit_time=jit_time,
+            **metadata,
+        ):
+            yield
+    else:
+        yield
+

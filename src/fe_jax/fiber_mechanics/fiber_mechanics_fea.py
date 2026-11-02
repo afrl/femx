@@ -6,6 +6,7 @@ from ..paths import get_output
 from ..fea import *
 from ..contact import *
 from ..linear_elasticity import *
+from ..profiling import profile_segment, StandardSegment
 from typing import List
 from copy import deepcopy
 
@@ -41,214 +42,187 @@ def solve_fiber_mechanics_bvp(
 ):
     if debug_info is None:
         debug_info = NULL_DEBUG_INFO
-    """
-    TODO document
-    """
-    fe_type = FiniteElementType(
-        cell_type=CellType.interval,
-        family=ElementFamily.P,
-        basis_degree=1,
-        lagrange_variant=LagrangeVariant.equispaced,
-        quadrature_type=QuadratureType.default,
-        quadrature_degree=2,
-    )
 
-    n_dofs_per_basis = fabric.points.shape[1]
+    with profile_segment(StandardSegment.IO_SETUP):
+        fe_type = FiniteElementType(
+            cell_type=CellType.interval,
+            family=ElementFamily.P,
+            basis_degree=1,
+            lagrange_variant=LagrangeVariant.equispaced,
+            quadrature_type=QuadratureType.default,
+            quadrature_degree=2,
+        )
 
-    print(f"fabric.get_n_elements(): {fabric.get_n_elements()}")
-    connectivity_en = np.zeros((fabric.get_n_elements(), 2), dtype=np.uint64)
-    element_index = 0
-    for i in range(fabric.fiber_offsets.shape[0] - 1):
-        for j in range(fabric.fiber_offsets[i + 1] - fabric.fiber_offsets[i] - 1):
-            connectivity_en[element_index] = [
-                fabric.fiber_offsets[i] + j,
-                fabric.fiber_offsets[i] + j + 1,
-            ]
-            element_index += 1
+        n_dofs_per_basis = fabric.points.shape[1]
 
-    material_params = np.zeros((connectivity_en.shape[0], 2), dtype=np.float64)
-    element_index = 0
-    for b_i in range(fabric.get_n_bundles()):
-        mat = materials[fabric.get_material_id(b_i)]
-        params = jnp.array([mat.E, mat.A])
-        for f_i in range(fabric.get_n_fibers_in_bundle(b_i)):
-            for e_i in range(fabric.get_fiber_n_elements(b_i, f_i)):
-                material_params[element_index] = params
+        print(f"fabric.get_n_elements(): {fabric.get_n_elements()}")
+        connectivity_en = np.zeros((fabric.get_n_elements(), 2), dtype=np.uint64)
+        element_index = 0
+        for i in range(fabric.fiber_offsets.shape[0] - 1):
+            for j in range(fabric.fiber_offsets[i + 1] - fabric.fiber_offsets[i] - 1):
+                connectivity_en[element_index] = [
+                    fabric.fiber_offsets[i] + j,
+                    fabric.fiber_offsets[i] + j + 1,
+                ]
                 element_index += 1
 
+        material_params = np.zeros((connectivity_en.shape[0], 2), dtype=np.float64)
+        element_index = 0
+        for b_i in range(fabric.get_n_bundles()):
+            mat = materials[fabric.get_material_id(b_i)]
+            params = jnp.array([mat.E, mat.A])
+            for f_i in range(fabric.get_n_fibers_in_bundle(b_i)):
+                for e_i in range(fabric.get_fiber_n_elements(b_i, f_i)):
+                    material_params[element_index] = params
+                    element_index += 1
 
-    internal_state = jnp.zeros((
-        connectivity_en.shape[0],
-        get_quadrature(fe_type=fe_type)[0].shape[0],
-        2
-    ))
-    if pre_strain is not None:
-        if isinstance(pre_strain, (int, float, np.number)):
-            pre_strain = [float(pre_strain)] * pseudotime_iters
-        elif isinstance(pre_strain, (list, tuple, np.ndarray, jnp.ndarray)):
-            # Handle 0D scalar arrays (e.g., jnp.array(0.05) or np.array(0.02))
-            if hasattr(pre_strain, "ndim") and pre_strain.ndim == 0:
+        internal_state = jnp.zeros((
+            connectivity_en.shape[0],
+            get_quadrature(fe_type=fe_type)[0].shape[0],
+            2
+        ))
+        if pre_strain is not None:
+            if isinstance(pre_strain, (int, float, np.number)):
                 pre_strain = [float(pre_strain)] * pseudotime_iters
-            elif len(pre_strain) != pseudotime_iters:
-                raise ValueError(
-                    f"Length of pre_strain ({len(pre_strain)}) must match "
-                    f"pseudotime_iters ({pseudotime_iters})."
-                )
+            elif isinstance(pre_strain, (list, tuple, np.ndarray, jnp.ndarray)):
+                if hasattr(pre_strain, "ndim") and pre_strain.ndim == 0:
+                    pre_strain = [float(pre_strain)] * pseudotime_iters
+                elif len(pre_strain) != pseudotime_iters:
+                    raise ValueError(
+                        f"Length of pre_strain ({len(pre_strain)}) must match "
+                        f"pseudotime_iters ({pseudotime_iters})."
+                    )
+                else:
+                    pre_strain = list(pre_strain)
             else:
-                pre_strain = list(pre_strain)
-        else:
-            raise TypeError(
-                f"pre_strain must be a scalar (int/float) or a sequence of length {pseudotime_iters}, "
-                f"got unexpected type '{type(pre_strain).__name__}'."
-            )
-    # if pre_strain is not None:
-    #     internal_state = jnp.full((
-    #         connectivity_en.shape[0],
-    #         get_quadrature(fe_type=fe_type)[0].shape[0],
-    #         1
-    #     ),pre_strain)
-    element_batches = [
-        ElementBatch(
-            fe_type            = fe_type,
-            n_dofs_per_basis   = n_dofs_per_basis,
-            connectivity_en    = connectivity_en,
-            constitutive_model = elastic_truss,
-            material_params    = jnp.array(material_params),
-            internal_state     = jnp.array(internal_state),
-            strain_measure     = strain_measure,
-        )
-    ]
-
-    point_fiber_ids = np.concatenate(
-        [
-            np.full((fabric.fiber_offsets[i + 1] - fabric.fiber_offsets[i],), i)
-            for i in range(fabric.fiber_offsets.shape[0] - 1)
-        ]
-    )
-    # contact_search_radius = contact_options.contact_search_radius
-    # surface_contact_alpha = getattr(contact_options, "surface_contact_alpha", None)
-    # use_surface_contact = surface_contact_alpha is not None
-    # if (contact_search_radius is None) == (surface_contact_alpha is None):
-    #     raise ValueError(
-    #         "ContactParams must define exactly one of contact_search_radius or "
-    #         "surface_contact_alpha."
-    #     )
-    if contact_options.contact_search_alpha <= contact_options.M_to_D_ratio:
-        raise ValueError(
-            "contact_search_alpha must be greater than M_to_D_ratio."
-        )
-    if contact_options.M_to_D_ratio <= contact_options.C_to_D_ratio:
-        raise ValueError(
-            "M_to_D_ratio must be greater than C_to_D_ratio."
-        )
-
-    contact_backend = resolve_contact_backend(
-        contact_options.contact_backend,
-        auto_uses_newton_warp=False,
-    )
-    fixed_capacity_backend = contact_backend in (
-        ContactBackend.NEWTON_WARP,
-        ContactBackend.CUPYX_KDTREE,
-    )
-    if fixed_capacity_backend and contact_options.rigid_contact_max is None:
-        raise ValueError(
-            f"{contact_backend} requires ContactParams.rigid_contact_max "
-            "to define the fixed contact capacity."
-        )
-
-    point_diameters = []
-    global_fiber_i = 0
-    for b_i in range(fabric.get_n_bundles()):
-        for _ in range(fabric.get_n_fibers_in_bundle(b_i)):
-            n_points = fabric.fiber_offsets[global_fiber_i + 1] - fabric.fiber_offsets[global_fiber_i]
-            point_diameters.append(np.full((n_points,), fabric.get_diameter(b_i)))
-            global_fiber_i += 1
-    point_diameters = np.concatenate(point_diameters)
-
-    if rigid_mold is not None:
-        point_diameters = np.concatenate([point_diameters, np.full((rigid_mold.points.shape[0],),rigid_mold.point_diameter)])
-
-        point_fiber_ids = np.concatenate([point_fiber_ids,rigid_mold.point_ids])
-        element_batches+= [
+                raise TypeError(
+                    f"pre_strain must be a scalar (int/float) or a sequence of length {pseudotime_iters}, "
+                    f"got unexpected type '{type(pre_strain).__name__}'."
+                )
+        element_batches = [
             ElementBatch(
-                fe_type=fe_type,
-                n_dofs_per_basis=n_dofs_per_basis,
-                connectivity_en=rigid_mold.connections + fabric.points.shape[0],
-                constitutive_model=elastic_truss,
-                material_params=jnp.array([materials[0].E,materials[0].A]),
-                strain_measure=strain_measure,
+                fe_type            = fe_type,
+                n_dofs_per_basis   = n_dofs_per_basis,
+                connectivity_en    = connectivity_en,
+                constitutive_model = elastic_truss,
+                material_params    = jnp.array(material_params),
+                internal_state     = jnp.array(internal_state),
+                strain_measure     = strain_measure,
             )
         ]
 
-    def assemble_vertices_vd(fabric, rigid_mold):
-        fabric_n = fabric.points.shape[0]
-        if rigid_mold is None:
-            return fabric.points.copy(), fabric_n, None
-        mold_n = rigid_mold.points.shape[0]
-        vertices_vd = np.vstack([fabric.points.copy(), rigid_mold.points.copy()])
-        return vertices_vd, fabric_n, slice(fabric_n, fabric_n + mold_n)
-    vertices_vd, fabric_n, mold_slice = assemble_vertices_vd(fabric,rigid_mold)
+        point_fiber_ids = np.concatenate(
+            [
+                np.full((fabric.fiber_offsets[i + 1] - fabric.fiber_offsets[i],), i)
+                for i in range(fabric.fiber_offsets.shape[0] - 1)
+            ]
+        )
+        if contact_options.contact_search_alpha <= contact_options.M_to_D_ratio:
+            raise ValueError(
+                "contact_search_alpha must be greater than M_to_D_ratio."
+            )
+        if contact_options.M_to_D_ratio <= contact_options.C_to_D_ratio:
+            raise ValueError(
+                "M_to_D_ratio must be greater than C_to_D_ratio."
+            )
 
-    contact_fe_type = fe_type
+        contact_backend = resolve_contact_backend(
+            contact_options.contact_backend,
+            auto_uses_newton_warp=False,
+        )
+        fixed_capacity_backend = contact_backend in (
+            ContactBackend.NEWTON_WARP,
+            ContactBackend.CUPYX_KDTREE,
+        )
+        if fixed_capacity_backend and contact_options.rigid_contact_max is None:
+            raise ValueError(
+                f"{contact_backend} requires ContactParams.rigid_contact_max "
+                "to define the fixed contact capacity."
+            )
 
-    self_adjacency_block = contact_options.self_adjacency_block
+        point_diameters = []
+        global_fiber_i = 0
+        for b_i in range(fabric.get_n_bundles()):
+            for _ in range(fabric.get_n_fibers_in_bundle(b_i)):
+                n_points = fabric.fiber_offsets[global_fiber_i + 1] - fabric.fiber_offsets[global_fiber_i]
+                point_diameters.append(np.full((n_points,), fabric.get_diameter(b_i)))
+                global_fiber_i += 1
+        point_diameters = np.concatenate(point_diameters)
 
-    contact_E_c = contact_options.D_stiffness_to_E_ratio * np.max(material_params[:,0])
-    contact_A = np.max(material_params[:,1])
-    contact_E_min = contact_options.M_stiffness_to_E_ratio * np.max(material_params[:,0])
-    contact_material_spec = ContactMaterialSpec(
-        E_c=contact_E_c,
-        area=contact_A,
-        M_to_D_ratio=contact_options.M_to_D_ratio,
-        C_to_D_ratio=contact_options.C_to_D_ratio,
-        search_alpha=contact_options.contact_search_alpha,
-        E_min=contact_E_min,
-    )
+        if rigid_mold is not None:
+            point_diameters = np.concatenate([point_diameters, np.full((rigid_mold.points.shape[0],),rigid_mold.point_diameter)])
 
-    contact_output_params = {
-        'self_adjacency_block': self_adjacency_block,
-        'contact_search_radius': contact_options.contact_search_alpha,
-        'point_diameters': point_diameters,
-        'surface_contact_alpha': contact_options.contact_search_alpha,
-    }
+            point_fiber_ids = np.concatenate([point_fiber_ids,rigid_mold.point_ids])
+            element_batches+= [
+                ElementBatch(
+                    fe_type=fe_type,
+                    n_dofs_per_basis=n_dofs_per_basis,
+                    connectivity_en=rigid_mold.connections + fabric.points.shape[0],
+                    constitutive_model=elastic_truss,
+                    material_params=jnp.array([materials[0].E,materials[0].A]),
+                    strain_measure=strain_measure,
+                )
+            ]
+
+        def assemble_vertices_vd(fabric, rigid_mold):
+            fabric_n = fabric.points.shape[0]
+            if rigid_mold is None:
+                return fabric.points.copy(), fabric_n, None
+            mold_n = rigid_mold.points.shape[0]
+            vertices_vd = np.vstack([fabric.points.copy(), rigid_mold.points.copy()])
+            return vertices_vd, fabric_n, slice(fabric_n, fabric_n + mold_n)
+        vertices_vd, fabric_n, mold_slice = assemble_vertices_vd(fabric,rigid_mold)
+
+        contact_fe_type = fe_type
+
+        self_adjacency_block = contact_options.self_adjacency_block
+
+        contact_E_c = contact_options.D_stiffness_to_E_ratio * np.max(material_params[:,0])
+        contact_A = np.max(material_params[:,1])
+        contact_E_min = contact_options.M_stiffness_to_E_ratio * np.max(material_params[:,0])
+        contact_material_spec = ContactMaterialSpec(
+            E_c=contact_E_c,
+            area=contact_A,
+            M_to_D_ratio=contact_options.M_to_D_ratio,
+            C_to_D_ratio=contact_options.C_to_D_ratio,
+            search_alpha=contact_options.contact_search_alpha,
+            E_min=contact_E_min,
+        )
+
+        contact_output_params = {
+            'self_adjacency_block': self_adjacency_block,
+            'contact_search_radius': contact_options.contact_search_alpha,
+            'point_diameters': point_diameters,
+            'surface_contact_alpha': contact_options.contact_search_alpha,
+        }
 
     def scipy_contact_pair_generator(u_ref) -> list[ElementBatch] | None:
-        if u_ref is None:
-            u_ref = jnp.zeros((vertices_vd.shape[0]*vertices_vd.shape[1],))
-        contact_cells = scipy_contact_batch(
-            points=vertices_vd + np.array(u_ref).reshape(vertices_vd.shape),
-            point_fiber_ids=point_fiber_ids,
-            adjacency_block=self_adjacency_block,
-            point_diameters=point_diameters,
-            search2radius_ratio=contact_options.contact_search_alpha,
-        )
-        if contact_cells.shape[0] == 0: return []
-        point_radii = 0.5 * point_diameters
-        contact_material_params = build_contact_material_params(
-            contact_cells=contact_cells,
-            point_radii=point_radii,
-            spec=contact_material_spec,
-        )
-        # contact_material_params = np.column_stack([
-        #     np.full((contact_cells.shape[0],), contact_E_c),
-        #     np.full((contact_cells.shape[0],), contact_A),
-        #     point_radii[contact_cells[:,0]],
-        #     point_radii[contact_cells[:,1]],
-        #     np.full((contact_cells.shape[0],), contact_options.M_to_D_ratio),
-        #     np.full((contact_cells.shape[0],), contact_options.C_to_D_ratio),
-        #     np.full((contact_cells.shape[0],), contact_options.contact_search_alpha),
-        #     np.full((contact_cells.shape[0],), contact_E_min),
-        #     np.ones((contact_cells.shape[0],)),
-        # ])
-        return [
-            ElementBatch(
-                fe_type=contact_fe_type,
-                n_dofs_per_basis=n_dofs_per_basis,
-                connectivity_en=contact_cells,
-                constitutive_model=contact_options.contact_constitutive_model,
-                material_params=jnp.array(contact_material_params),
+        with profile_segment(StandardSegment.CONTACT_SEARCH):
+            if u_ref is None:
+                u_ref = jnp.zeros((vertices_vd.shape[0]*vertices_vd.shape[1],))
+            contact_cells = scipy_contact_batch(
+                points=vertices_vd + np.array(u_ref).reshape(vertices_vd.shape),
+                point_fiber_ids=point_fiber_ids,
+                adjacency_block=self_adjacency_block,
+                point_diameters=point_diameters,
+                search2radius_ratio=contact_options.contact_search_alpha,
             )
-        ]
+            if contact_cells.shape[0] == 0: return []
+            point_radii = 0.5 * point_diameters
+            contact_material_params = build_contact_material_params(
+                contact_cells=contact_cells,
+                point_radii=point_radii,
+                spec=contact_material_spec,
+            )
+            return [
+                ElementBatch(
+                    fe_type=contact_fe_type,
+                    n_dofs_per_basis=n_dofs_per_basis,
+                    connectivity_en=contact_cells,
+                    constitutive_model=contact_options.contact_constitutive_model,
+                    material_params=jnp.array(contact_material_params),
+                )
+            ]
 
     shared_dummy_pair = None
     if fixed_capacity_backend:
@@ -276,36 +250,37 @@ def solve_fiber_mechanics_bvp(
         )
 
     def newton_contact_pair_generator(u_ref) -> list[ElementBatch]:
-        if u_ref is None:
-            current_points = vertices_vd
-        else:
-            current_points = vertices_vd + np.asarray(u_ref).reshape(vertices_vd.shape)
+        with profile_segment(StandardSegment.CONTACT_SEARCH):
+            if u_ref is None:
+                current_points = vertices_vd
+            else:
+                current_points = vertices_vd + np.asarray(u_ref).reshape(vertices_vd.shape)
 
-        contact_cells, active, count, capacity_exhausted = warp_contact_batch(
-            ctx=newton_contact_ctx,
-            current_points_jax=jnp.asarray(current_points),
-            dummy_pair=shared_dummy_pair,
-        )
-        raise_if_contact_capacity_exhausted(
-            ctx=newton_contact_ctx,
-            count=count,
-            capacity_exhausted=capacity_exhausted,
-        )
-        contact_material_params = build_contact_material_params(
-            contact_cells=contact_cells,
-            point_radii=point_radii,
-            spec=contact_material_spec,
-            active=active,
-        )
-        return [
-            ElementBatch(
-                fe_type=contact_fe_type,
-                n_dofs_per_basis=n_dofs_per_basis,
-                connectivity_en=np.asarray(contact_cells),
-                constitutive_model=contact_options.contact_constitutive_model,
-                material_params=jnp.array(contact_material_params),
+            contact_cells, active, count, capacity_exhausted = warp_contact_batch(
+                ctx=newton_contact_ctx,
+                current_points_jax=jnp.asarray(current_points),
+                dummy_pair=shared_dummy_pair,
             )
-        ]
+            raise_if_contact_capacity_exhausted(
+                ctx=newton_contact_ctx,
+                count=count,
+                capacity_exhausted=capacity_exhausted,
+            )
+            contact_material_params = build_contact_material_params(
+                contact_cells=contact_cells,
+                point_radii=point_radii,
+                spec=contact_material_spec,
+                active=active,
+            )
+            return [
+                ElementBatch(
+                    fe_type=contact_fe_type,
+                    n_dofs_per_basis=n_dofs_per_basis,
+                    connectivity_en=np.asarray(contact_cells),
+                    constitutive_model=contact_options.contact_constitutive_model,
+                    material_params=jnp.array(contact_material_params),
+                )
+            ]
 
     # Precompute grid geometry for JAX_HASH once on the initial reference configuration
     jaxhash_grid = None
@@ -329,120 +304,123 @@ def solve_fiber_mechanics_bvp(
             )
 
     def jaxhash_contact_pair_generator(u_ref) -> list[ElementBatch]:
-        if u_ref is None:
-            current_points = vertices_vd
-        else:
-            current_points = vertices_vd + np.asarray(u_ref).reshape(vertices_vd.shape)
+        with profile_segment(StandardSegment.CONTACT_SEARCH):
+            if u_ref is None:
+                current_points = vertices_vd
+            else:
+                current_points = vertices_vd + np.asarray(u_ref).reshape(vertices_vd.shape)
 
-        domain_min, Nx, Ny, Nz, total_cells, C_max = jaxhash_grid
-        contact_cells, active, count, capacity_exhausted = jaxhash_contact_batch(
-            points=current_points,
-            point_fiber_ids=point_fiber_ids,
-            adjacency_block=self_adjacency_block,
-            point_diameters=point_diameters,
-            search2radius_ratio=contact_options.contact_search_alpha,
-            rigid_contact_max=contact_options.rigid_contact_max,
-            domain_min=domain_min,
-            Nx=Nx,
-            Ny=Ny,
-            Nz=Nz,
-            total_cells=total_cells,
-            C_max=C_max,
-            dummy_pair=shared_dummy_pair,
-        )
-        raise_if_jaxhash_contact_capacity_exhausted(
-            capacity=contact_options.rigid_contact_max,
-            count=count,
-            capacity_exhausted=capacity_exhausted,
-        )
-        contact_material_params = build_contact_material_params(
-            contact_cells=contact_cells,
-            point_radii=point_radii,
-            spec=contact_material_spec,
-            active=active,
-        )
-        return [
-            ElementBatch(
-                fe_type=contact_fe_type,
-                n_dofs_per_basis=n_dofs_per_basis,
-                connectivity_en=np.asarray(contact_cells),
-                constitutive_model=contact_options.contact_constitutive_model,
-                material_params=jnp.array(contact_material_params),
+            domain_min, Nx, Ny, Nz, total_cells, C_max = jaxhash_grid
+            contact_cells, active, count, capacity_exhausted = jaxhash_contact_batch(
+                points=current_points,
+                point_fiber_ids=point_fiber_ids,
+                adjacency_block=self_adjacency_block,
+                point_diameters=point_diameters,
+                search2radius_ratio=contact_options.contact_search_alpha,
+                rigid_contact_max=contact_options.rigid_contact_max,
+                domain_min=domain_min,
+                Nx=Nx,
+                Ny=Ny,
+                Nz=Nz,
+                total_cells=total_cells,
+                C_max=C_max,
+                dummy_pair=shared_dummy_pair,
             )
-        ]
+            raise_if_jaxhash_contact_capacity_exhausted(
+                capacity=contact_options.rigid_contact_max,
+                count=count,
+                capacity_exhausted=capacity_exhausted,
+            )
+            contact_material_params = build_contact_material_params(
+                contact_cells=contact_cells,
+                point_radii=point_radii,
+                spec=contact_material_spec,
+                active=active,
+            )
+            return [
+                ElementBatch(
+                    fe_type=contact_fe_type,
+                    n_dofs_per_basis=n_dofs_per_basis,
+                    connectivity_en=np.asarray(contact_cells),
+                    constitutive_model=contact_options.contact_constitutive_model,
+                    material_params=jnp.array(contact_material_params),
+                )
+            ]
 
     def jztree_contact_pair_generator(u_ref) -> list[ElementBatch]:
-        if u_ref is None:
-            current_points = vertices_vd
-        else:
-            current_points = vertices_vd + np.asarray(u_ref).reshape(vertices_vd.shape)
+        with profile_segment(StandardSegment.CONTACT_SEARCH):
+            if u_ref is None:
+                current_points = vertices_vd
+            else:
+                current_points = vertices_vd + np.asarray(u_ref).reshape(vertices_vd.shape)
 
-        contact_cells, active, count, capacity_exhausted = jztree_contact_batch(
-            points=current_points,
-            point_fiber_ids=point_fiber_ids,
-            adjacency_block=self_adjacency_block,
-            point_diameters=point_diameters,
-            search2radius_ratio=contact_options.contact_search_alpha,
-            rigid_contact_max=contact_options.rigid_contact_max,
-            dummy_pair=shared_dummy_pair,
-            k=contact_options.knn_k,
-        )
-        raise_if_jztree_contact_capacity_exhausted(
-            capacity=contact_options.rigid_contact_max,
-            count=count,
-            capacity_exhausted=capacity_exhausted,
-        )
-        contact_material_params = build_contact_material_params(
-            contact_cells=contact_cells,
-            point_radii=point_radii,
-            spec=contact_material_spec,
-            active=active,
-        )
-        return [
-            ElementBatch(
-                fe_type=contact_fe_type,
-                n_dofs_per_basis=n_dofs_per_basis,
-                connectivity_en=np.asarray(contact_cells),
-                constitutive_model=contact_options.contact_constitutive_model,
-                material_params=jnp.array(contact_material_params),
+            contact_cells, active, count, capacity_exhausted = jztree_contact_batch(
+                points=current_points,
+                point_fiber_ids=point_fiber_ids,
+                adjacency_block=self_adjacency_block,
+                point_diameters=point_diameters,
+                search2radius_ratio=contact_options.contact_search_alpha,
+                rigid_contact_max=contact_options.rigid_contact_max,
+                dummy_pair=shared_dummy_pair,
+                k=contact_options.knn_k,
             )
-        ]
+            raise_if_jztree_contact_capacity_exhausted(
+                capacity=contact_options.rigid_contact_max,
+                count=count,
+                capacity_exhausted=capacity_exhausted,
+            )
+            contact_material_params = build_contact_material_params(
+                contact_cells=contact_cells,
+                point_radii=point_radii,
+                spec=contact_material_spec,
+                active=active,
+            )
+            return [
+                ElementBatch(
+                    fe_type=contact_fe_type,
+                    n_dofs_per_basis=n_dofs_per_basis,
+                    connectivity_en=np.asarray(contact_cells),
+                    constitutive_model=contact_options.contact_constitutive_model,
+                    material_params=jnp.array(contact_material_params),
+                )
+            ]
 
     def cupyx_contact_pair_generator(u_ref) -> list[ElementBatch]:
-        if u_ref is None:
-            current_points = vertices_vd
-        else:
-            current_points = vertices_vd + np.asarray(u_ref).reshape(vertices_vd.shape)
+        with profile_segment(StandardSegment.CONTACT_SEARCH):
+            if u_ref is None:
+                current_points = vertices_vd
+            else:
+                current_points = vertices_vd + np.asarray(u_ref).reshape(vertices_vd.shape)
 
-        contact_cells, active, count, capacity_exhausted = cupyx_contact_batch(
-            points=current_points,
-            point_fiber_ids=point_fiber_ids,
-            adjacency_block=self_adjacency_block,
-            point_diameters=point_diameters,
-            search2radius_ratio=contact_options.contact_search_alpha,
-            rigid_contact_max=contact_options.rigid_contact_max,
-            dummy_pair=shared_dummy_pair,
-        )
-        raise_if_cupyx_kdtree_contact_capacity_exhausted(
-            capacity=contact_options.rigid_contact_max,
-            count=count,
-            capacity_exhausted=capacity_exhausted,
-        )
-        contact_material_params = build_contact_material_params(
-            contact_cells=contact_cells,
-            point_radii=point_radii,
-            spec=contact_material_spec,
-            active=active,
-        )
-        return [
-            ElementBatch(
-                fe_type=contact_fe_type,
-                n_dofs_per_basis=n_dofs_per_basis,
-                connectivity_en=np.asarray(contact_cells),
-                constitutive_model=contact_options.contact_constitutive_model,
-                material_params=jnp.array(contact_material_params),
+            contact_cells, active, count, capacity_exhausted = cupyx_contact_batch(
+                points=current_points,
+                point_fiber_ids=point_fiber_ids,
+                adjacency_block=self_adjacency_block,
+                point_diameters=point_diameters,
+                search2radius_ratio=contact_options.contact_search_alpha,
+                rigid_contact_max=contact_options.rigid_contact_max,
+                dummy_pair=shared_dummy_pair,
             )
-        ]
+            raise_if_cupyx_kdtree_contact_capacity_exhausted(
+                capacity=contact_options.rigid_contact_max,
+                count=count,
+                capacity_exhausted=capacity_exhausted,
+            )
+            contact_material_params = build_contact_material_params(
+                contact_cells=contact_cells,
+                point_radii=point_radii,
+                spec=contact_material_spec,
+                active=active,
+            )
+            return [
+                ElementBatch(
+                    fe_type=contact_fe_type,
+                    n_dofs_per_basis=n_dofs_per_basis,
+                    connectivity_en=np.asarray(contact_cells),
+                    constitutive_model=contact_options.contact_constitutive_model,
+                    material_params=jnp.array(contact_material_params),
+                )
+            ]
 
     if contact_backend == ContactBackend.JAX_HASH:
         contact_pair_generator = jaxhash_contact_pair_generator
@@ -535,49 +513,53 @@ def solve_fiber_mechanics_bvp(
 
         if fixed_capacity_backend:
             if preprocessed_bvp is None:
-                preprocessed_bvp = preprocess_bvp_initial(
+                with profile_segment(StandardSegment.CONTACT_SEARCH, step_index=i):
+                    preprocessed_bvp = preprocess_bvp_initial(
+                        element_residual_func=linear_truss_residual,
+                        vertices_vd=vertices_vd,
+                        u_0_g=None,
+                        element_batches=element_batches,
+                        boundary_conditions=boundary_conditions[i],
+                        contact_batch_generator=contact_pair_generator,
+                    )
+            else:
+                with profile_segment(StandardSegment.CONTACT_SEARCH, step_index=i):
+                    preprocessed_bvp = preprocess_bvp_update(
+                        previous=preprocessed_bvp,
+                        vertices_vd=vertices_vd,
+                        element_batches=element_batches,
+                        boundary_conditions=boundary_conditions[i],
+                        contact_batch_generator=contact_pair_generator,
+                        u_0_g=None,
+                    )
+
+            with profile_segment(StandardSegment.LINEAR_SOLVE, step_index=i):
+                du_truss, residual_truss, element_batches_truss = solve_preprocessed_bvp(
+                    preprocessed=preprocessed_bvp,
+                    vertices_vd=vertices_vd,
+                    u_0_g=None,
+                    solver_options=solver_options,
+                    plot_convergence=plot_convergence,
+                    profile_memory=profile_memory,
+                    element_diagnostic_outputs=None,
+                    debug_info=debug_info,
+                    time_step=i,
+                )
+        else:
+            with profile_segment(StandardSegment.LINEAR_SOLVE, step_index=i):
+                du_truss, residual_truss, element_batches_truss = solve_bvp(
                     element_residual_func=linear_truss_residual,
                     vertices_vd=vertices_vd,
-                    u_0_g=None,
+                    # u_0_g=None if i==0 else u_truss,
+                    u_0_g = None,
                     element_batches=element_batches,
                     boundary_conditions=boundary_conditions[i],
+                    solver_options=solver_options,
+                    plot_convergence=plot_convergence,
                     contact_batch_generator=contact_pair_generator,
+                    debug_info=debug_info,
+                    time_step = i,
                 )
-            else:
-                preprocessed_bvp = preprocess_bvp_update(
-                    previous=preprocessed_bvp,
-                    vertices_vd=vertices_vd,
-                    element_batches=element_batches,
-                    boundary_conditions=boundary_conditions[i],
-                    contact_batch_generator=contact_pair_generator,
-                    u_0_g=None,
-                )
-
-            du_truss, residual_truss, element_batches_truss = solve_preprocessed_bvp(
-                preprocessed=preprocessed_bvp,
-                vertices_vd=vertices_vd,
-                u_0_g=None,
-                solver_options=solver_options,
-                plot_convergence=plot_convergence,
-                profile_memory=profile_memory,
-                element_diagnostic_outputs=None,
-                debug_info=debug_info,
-                time_step=i,
-            )
-        else:
-            du_truss, residual_truss, element_batches_truss = solve_bvp(
-                element_residual_func=linear_truss_residual,
-                vertices_vd=vertices_vd,
-                # u_0_g=None if i==0 else u_truss,
-                u_0_g = None,
-                element_batches=element_batches,
-                boundary_conditions=boundary_conditions[i],
-                solver_options=solver_options,
-                plot_convergence=plot_convergence,
-                contact_batch_generator=contact_pair_generator,
-                debug_info=debug_info,
-                time_step = i,
-            )
         for b_i in range(len(element_batches)):
             element_batches[b_i] = element_batches_truss[b_i]
 
@@ -615,18 +597,19 @@ def solve_fiber_mechanics_bvp(
         # fabric.points = fabric.points + np.array(u_truss)
 
         if filename_base is not None:
-            temp_fab = deepcopy(fabric)
-            temp_fab.points = vertices_vd[:fabric_n].copy()
-            temp_mold = deepcopy(rigid_mold)
-            if rigid_mold is not None:
-                temp_mold.points = vertices_vd[mold_slice].copy()
-            write_vtk(temp_fab,get_output(filename=f"{filename_base}_{i+1}.vtk"))
-            write_fabric_mold_contact(
-                fabric = temp_fab,
-                mold = temp_mold,
-                filename = get_output(filename = f"{filename_base}_wireframe_{i+1}.vtk"),
-                contact_params = contact_output_params,
-            )
+            with profile_segment(StandardSegment.POST_PROCESS, step_index=i):
+                temp_fab = deepcopy(fabric)
+                temp_fab.points = vertices_vd[:fabric_n].copy()
+                temp_mold = deepcopy(rigid_mold)
+                if rigid_mold is not None:
+                    temp_mold.points = vertices_vd[mold_slice].copy()
+                write_vtk(temp_fab,get_output(filename=f"{filename_base}_{i+1}.vtk"))
+                write_fabric_mold_contact(
+                    fabric = temp_fab,
+                    mold = temp_mold,
+                    filename = get_output(filename = f"{filename_base}_wireframe_{i+1}.vtk"),
+                    contact_params = contact_output_params,
+                )
         if jnp.isnan(du_truss).any() or jnp.isinf(du_truss).any() or np.linalg.norm(du_truss_vd,axis=1).max()>blow_up_threshold:
             raise RuntimeError(f"Nonlinear solve diverged: displacement magnitude exceeded threshold ({blow_up_threshold})")
 
