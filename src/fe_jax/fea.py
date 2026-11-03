@@ -681,13 +681,13 @@ def solve_nonlinear_step(
         nl_iteration, u_f, R_f, new_internal_state_beqi, info = args
         absolute_error = jnp.linalg.norm(R_f)
         relative_error = absolute_error / initial_R_f_norm
-        # jax.debug.print(
-        #     "End of iteration {x} rel error {y}, abs error {z}",
-        #     x=nl_iteration - 1,
-        #     y=relative_error,
-        #     z=absolute_error,
-        # )
         """
+        jax.debug.print(
+            "End of iteration {x} rel error {y}, abs error {z}",
+            x=nl_iteration - 1,
+            y=relative_error,
+            z=absolute_error,
+        )
         jax.debug.print(
             "Convergence criteria: {} {} {}",
             nl_iteration < solver_options.nonlinear_max_iter,
@@ -1281,7 +1281,22 @@ def solve_nonlinear_quasi_step(
 
     return (u_f, new_internal_state_beqi, R_f, relative_error, info)
 
-def compute_ISV_be(internal_state_beqi):
+def calculate_element_averaged_state(internal_state_beqi):
+    """
+    Averages the internal state of every element over its quadrature points.
+
+    For each batch the output holds (strain 3, stress 3, damage 1) per element, with the
+    damage applied to the stress. Fiber batches (< 8 ISVs) get no stress reduction and a
+    damage marker of -0.2 for plotting.
+
+    Parameters
+    ----------
+    internal_state_beqi : sequence (one entry per batch) of arrays with shape (E, Q, I)
+
+    Returns
+    -------
+    ISV_be : list (one entry per batch) of arrays with shape (E, 7)
+    """
     ISV_be = []
     for idx in range(len(internal_state_beqi)):
         state_q = internal_state_beqi[idx]
@@ -1306,6 +1321,28 @@ def compute_ISV_be(internal_state_beqi):
         ISV_be.append(avg_state)
         
     return ISV_be
+
+
+def _bc_time_series(constraint_system: ConstraintSystem, f_ext):
+    """
+    Returns the Dirichlet offsets g and external loads as (T, ...) arrays with one row per time step.
+    A BC without a time series is broadcast to every step.
+    """
+    all_g = constraint_system.g
+    if all_g.ndim == 1:
+        all_g = all_g[None, :]
+
+    all_loads = f_ext.loads
+    if all_loads.ndim == 1:
+        all_loads = jnp.broadcast_to(all_loads[None, :], (all_g.shape[0], all_loads.shape[0]))
+
+    if all_loads.shape[0] > all_g.shape[0]:
+        if all_g.shape[0] == 1:
+            all_g = jnp.broadcast_to(all_g, (all_loads.shape[0], all_g.shape[1]))
+        else:
+            raise ValueError("Inconsistent time steps between Dirichlet and Neumann BCs")
+
+    return all_g, all_loads
 
 
 def solve_bvp_quasi(
@@ -1363,7 +1400,7 @@ def solve_bvp_quasi(
         boundary_conditions=boundary_conditions,
         multipoint_constraints=multipoint_constraints,
         global_values=global_values,
-        jacobian_nnz=jacobian_nnz,
+        # jacobian_nnz=jacobian_nnz,
     )
 
     n_total_dofs = vertices_vd.shape[0] * ebc.U[0] + sum(global_values)
@@ -1379,19 +1416,7 @@ def solve_bvp_quasi(
         static_argnames=["solver_options", "jacobian_nnz"],
     )
 
-    all_g = constraint_system.g
-    if all_g.ndim == 1:
-        all_g = all_g[None, :]
-        
-    all_loads = f_ext.loads
-    if all_loads.ndim == 1:
-        all_loads = jnp.broadcast_to(all_loads[None, :], (all_g.shape[0], all_loads.shape[0]))
-        
-    if all_loads.shape[0] > all_g.shape[0]:
-        if all_g.shape[0] == 1:
-            all_g = jnp.broadcast_to(all_g, (all_loads.shape[0], all_g.shape[1]))
-        else:
-            raise ValueError("Inconsistent time steps between Dirichlet and Neumann BCs")
+    all_g, all_loads = _bc_time_series(constraint_system, f_ext)
 
     def step_fn(carry, xs):
         u_prev, ebc_curr = carry
@@ -1413,7 +1438,7 @@ def solve_bvp_quasi(
 
         flat_internal_state = jnp.hstack([isv.ravel() for isv in new_internal_state_beqi])
         ebc_next = ebc_curr.replace(internal_state=flat_internal_state)
-        ISV_be = compute_ISV_be(new_internal_state_beqi)
+        ISV_be = calculate_element_averaged_state(new_internal_state_beqi)
         
         return (u, ebc_next), (u, ISV_be)
 
@@ -1540,16 +1565,8 @@ def build_differentiable_bvp_PETSc_solve(
     residual_for_phi = jax.tree_util.Partial(residual, phi)
     jacobian_for_phi = jax.tree_util.Partial(jacobian, phi)
 
-    options = petsc_solver_options or jetsci.SolverOptions(
-            nonlinear_solver_type=jetsci.NonlinearSolverType.PETSC_SNES,
-            linear_precond_type=jetsci.PETScPreconditionerType.JACOBI,
-            linear_solve_type=jetsci.PETScLinearSolverType.CG,
-            nonlinear_absolute_tol=1e-14,
-            linear_max_iter=5000,
-            linear_relative_tol=1e-6,
-            linear_absolute_tol=1e-14,
-        )
-    
+    options = petsc_solver_options or _default_petsc_solver_options()
+
     solver, options = petsc_snes.solver_lifecycle.build_petsc_solver_with_reuse(
             options,
             residual_for_phi,
@@ -1569,8 +1586,238 @@ def build_differentiable_bvp_PETSc_solve(
     return solve, phi, u_0_g, residual_for_phi, options, residual_isv_for_phi
 
 
+def _default_petsc_solver_options():
+    return jetsci.SolverOptions(
+        nonlinear_solver_type=jetsci.NonlinearSolverType.PETSC_SNES,
+        linear_precond_type=jetsci.PETScPreconditionerType.JACOBI,
+        linear_solve_type=jetsci.PETScLinearSolverType.CG,
+        nonlinear_absolute_tol=1e-14,
+        linear_max_iter=5000,
+        linear_relative_tol=1e-6,
+        linear_absolute_tol=1e-14,
+    )
 
-    
+
+def solve_bvp_quasi_PETSc(
+    vertices_vd: np.ndarray[Any, np.dtype[np.floating[Any]]],
+    element_batches: list[ElementBatch],
+    element_residual_func: jax.tree_util.Partial,
+    boundary_conditions: List[DirichletBC | NeumannBC | PeriodicBC] | None = None,
+    multipoint_constraints: List[MultiPointConstraint] | None = None,
+    global_values: List[int] | None = None,
+    u_0_g: jnp.ndarray | None = None,
+    diagnostics: bool = False,
+    petsc_solver_options: jetsci.SolverOptions | None = None,
+    jacobian_nnz: int | None = None,
+    destroy_solver: bool = True,
+) -> tuple[jnp.ndarray, list[jnp.ndarray]]:
+    """
+    PETSc SNES counterpart of `solve_bvp_quasi`: solve a quasi-static boundary value problem
+    across the time steps of the boundary conditions.
+
+    Returns
+    -------
+    u_history      : displacement solution history across time steps, ndarray[float, (T, V * D)]
+    ISV_be_history : averaged internal state variable history across time steps for each element batch
+    """
+    run, material_params, options = build_differentiable_bvp_quasi_PETSc_solve(
+        vertices_vd=vertices_vd,
+        element_batches=element_batches,
+        element_residual_func=element_residual_func,
+        boundary_conditions=boundary_conditions,
+        multipoint_constraints=multipoint_constraints,
+        global_values=global_values,
+        u_0_g=u_0_g,
+        diagnostics=diagnostics,
+        petsc_solver_options=petsc_solver_options,
+        jacobian_nnz=jacobian_nnz,
+    )
+
+    solver_key = options.solver_key
+    try:
+        return run(material_params)
+    finally:
+        if solver_key is not None:
+            petsc_snes.differentiable_snes.unregister_primitive_context(solver_key)
+        if destroy_solver and solver_key is not None:
+            petsc_snes.solver_lifecycle.destroy_petsc_solver(solver_key)
+
+
+def build_differentiable_bvp_quasi_PETSc_solve(
+    vertices_vd: np.ndarray[Any, np.dtype[np.floating[Any]]],
+    element_batches: list[ElementBatch],
+    element_residual_func: jax.tree_util.Partial,
+    boundary_conditions: List[DirichletBC | NeumannBC | PeriodicBC] | None = None,
+    multipoint_constraints: List[MultiPointConstraint] | None = None,
+    global_values: List[int] | None = None,
+    u_0_g: jnp.ndarray | None = None,
+    diagnostics: bool = False,
+    petsc_solver_options: jetsci.SolverOptions | None = None,
+    jacobian_nnz: int | None = None,
+    ):
+    """Build a differentiable PETSc-backed quasi-static solve over all time steps.
+
+    Returns `(run, material_params, options)`, where `run(material_params)` solves every
+    time step with one reused PETSc SNES and returns `(u_history, ISV_be_history)` like
+    `solve_bvp_quasi`. `material_params` is the flattened parameter vector of the
+    preprocessed element batch collection and `options.solver_key` owns the PETSc solver.
+
+    Each step calls the differentiable SNES primitive with
+    phi = [material params, ISVs of the previous step, Dirichlet offsets g_i, external loads_i].
+    Everything a step depends on is in phi, so the residual/Jacobian are compiled once and
+    the implicit-function sensitivities carry through the ISV history and the BC values.
+
+    NOTE: the JetSCI primitive has no lowering rule, so the time loop is a Python loop
+    instead of jax.lax.scan and `run` cannot be wrapped in jax.jit.
+    """
+
+    if boundary_conditions is None:
+        boundary_conditions = []
+    if multipoint_constraints is None:
+        multipoint_constraints = []
+    if global_values is None:
+        global_values = []
+
+    (
+        ebc,
+        assembly_map_b,
+        constraint_system,
+        jacobian_nnz,
+        element_residual_func,
+        f_ext,
+    ) = preprocess_bvp(
+        vertices_vd=vertices_vd,
+        element_batches=element_batches,
+        element_residual_func=element_residual_func,
+        boundary_conditions=boundary_conditions,
+        multipoint_constraints=multipoint_constraints,
+        global_values=global_values,
+        jacobian_nnz=jacobian_nnz,
+    )
+
+    n_total_dofs = vertices_vd.shape[0] * ebc.U[0] + sum(global_values)
+
+    # If an initial guess was not provided, then use zeros
+    if u_0_g is None:
+        u_0_g = jnp.zeros(shape=(n_total_dofs,))
+    else:
+        assert u_0_g.shape == (n_total_dofs,)
+
+    all_g, all_loads = _bc_time_series(constraint_system, f_ext)
+    ebc = _commit_to_petsc_device(ebc)
+
+    # Offsets of the material params, ISVs and g within phi (loads take the rest)
+    phi_splits = np.cumsum(
+        [ebc.material_params.size, ebc.internal_state.size, all_g.shape[1]]
+    ).tolist()
+
+    def unpack(phi):
+        material_params, internal_state, g, loads = jnp.split(phi, phi_splits)
+        return (
+            ebc.replace(material_params=material_params, internal_state=internal_state),
+            constraint_system.replace(g=g),
+            f_ext.replace(loads=loads),
+        )
+
+    def pack(material_params, internal_state, g, loads):
+        return jnp.concatenate([material_params, internal_state, g, loads])
+
+    # Function that produces (R(u), ISVs)
+    def residual_isv(phi, x):
+        ebc_i, constraints_i, f_ext_i = unpack(phi)
+        return _residual_isv_w_constraints_jit(
+            u_f=x,
+            element_residual_func=element_residual_func,
+            ebc=ebc_i,
+            assembly_map_b=assembly_map_b,
+            constraints=constraints_i,
+            f_ext=f_ext_i,
+        )
+
+    # PETSc hands over DLPack views of its own vectors, so copy before calling into JAX
+    def residual(phi, x):
+        return residual_isv(phi, jnp.array(x, copy=True))[0]
+
+    # Function that produces J(u) with Dirichlet BCs applied (MPCs are NOT applied)
+    def jacobian(phi, x):
+        ebc_i, _, _ = unpack(phi)
+        return _jacobian_w_dirichlet_jit(
+            u_f=jnp.array(x, copy=True),
+            element_residual_func=element_residual_func,
+            ebc=ebc_i,
+            assembly_map_b=assembly_map_b,
+            precomputed_jacobian_nnz=jacobian_nnz,
+            dep_dofs=constraint_system.dep_dofs,
+        )
+
+    phi_0 = pack(ebc.material_params, ebc.internal_state, all_g[0], all_loads[0])
+    options = petsc_solver_options or _default_petsc_solver_options()
+
+    solver, options = petsc_snes.solver_lifecycle.build_petsc_solver_with_reuse(
+        options,
+        jax.tree_util.Partial(residual, phi_0),
+        jax.tree_util.Partial(jacobian, phi_0),
+    )
+    solver.diagnostics = diagnostics
+    if solver.callback_stats is not None:
+        solver.callback_stats["collect_diagnostics"] = diagnostics
+
+    primitive = differentiable_snes.DifferentiableSNESPrimitive(
+        residual=residual,
+        jacobian=jacobian,
+        solver_key=options.solver_key,
+    )
+    solve = petsc_snes.differentiable_snes.make_differentiable_snes_solve(primitive)
+
+    def run(material_params):
+        u = u_0_g
+        internal_state = ebc.internal_state
+        u_history, ISV_be_history = [], []
+        for g_i, loads_i in zip(all_g, all_loads):
+            phi = pack(material_params, internal_state, g_i, loads_i)
+            u = solve(phi, u)
+            _, new_internal_state_beqi = residual_isv(phi, u)
+            internal_state = jnp.hstack([isv.ravel() for isv in new_internal_state_beqi])
+            u_history.append(u)
+            ISV_be_history.append(calculate_element_averaged_state(new_internal_state_beqi))
+
+        u_history = jnp.stack(u_history)
+        ISV_be_history = jax.tree_util.tree_map(lambda *x: jnp.stack(x), *ISV_be_history)
+        return u_history, ISV_be_history
+
+    return run, ebc.material_params, options
+
+
+# Jitted once at module level so every PETSc callback built below, e.g. once per load step,
+# reuses the same compiled code. Everything that changes between calls (ebc, constraints, f_ext)
+# must be passed as an argument: jitting a fresh closure misses the cache on every build, and
+# arrays captured by a closure are baked into the program as constants.
+_residual_isv_w_constraints_jit = jax.jit(calculate_residual_w_constraints)
+
+
+@partial(jax.jit, static_argnames=("precomputed_jacobian_nnz",))
+def _jacobian_w_dirichlet_jit(
+    u_f, element_residual_func, ebc, assembly_map_b, precomputed_jacobian_nnz, dep_dofs
+):
+    J = calculate_jacobian_wo_constraints(
+        u_f=u_f,
+        element_residual_func=element_residual_func,
+        ebc=ebc,
+        assembly_map_b=assembly_map_b,
+        precomputed_jacobian_nnz=precomputed_jacobian_nnz,
+    )
+    return apply_dirichlet_bcs_lhs(J, dep_dofs)
+
+
+def _commit_to_petsc_device(tree):
+    """
+    PETSc returns solutions through DLPack as arrays committed to a device, so the ISVs computed
+    from them are committed too. JAX keys compiled code on placement, so commit the initial
+    state up front; otherwise the second step compiles everything again.
+    """
+    return jax.device_put(tree, jax.devices()[0])
+
+
 def build_nonlinear_objects(
     element_residual_func: jax.tree_util.Partial,
     ebc: ElementBatchCollection,
@@ -1582,11 +1829,14 @@ def build_nonlinear_objects(
     *args,
     **kwargs,):
 
+    ebc = _commit_to_petsc_device(ebc)
+
     def ebc_with_material_params(phi):
         return ebc.replace(material_params=jnp.asarray(phi))
 
+    # Function that produces (R(u), ISVs)
     def residual_isv_func_w_constraints(phi, x):
-        return calculate_residual_w_constraints(
+        return _residual_isv_w_constraints_jit(
             u_f=x,
             element_residual_func=element_residual_func,
             ebc=ebc_with_material_params(phi),
@@ -1595,45 +1845,21 @@ def build_nonlinear_objects(
             f_ext=f_ext,
         )
 
-    residual_isv_func_w_constraints = jax.jit(residual_isv_func_w_constraints)
-    
-    jit_residual_isv = jax.jit(residual_isv_func_w_constraints)
-    
-        # Function that produces R(u)
-    def residual_func_w_constraints(phi, x):
-        return jit_residual_isv(phi, jnp.array(x, copy=True))[0]
+    # PETSc hands over DLPack views of its own vectors, so copy before calling into JAX
 
-    jit_jacobian_wo_constraints = jax.jit(calculate_jacobian_wo_constraints, static_argnames=("precomputed_jacobian_nnz",))
-    
-        # Function that produces J(u) without Dirichlet BCs and MPCs applied
-    def jacobian_func_wo_constraints(phi, x):
-        return jit_jacobian_wo_constraints(
+    # Function that produces R(u) with Dirichlet BCs applied
+    def R_w_dirichlet(phi, x):
+        return residual_isv_func_w_constraints(phi, jnp.array(x, copy=True))[0]
+
+    # Function that produces J(u) with Dirichlet BCs applied (MPCs are NOT applied)
+    def J_w_dirichlet(phi, x):
+        return _jacobian_w_dirichlet_jit(
             u_f=jnp.array(x, copy=True),
             element_residual_func=element_residual_func,
             ebc=ebc_with_material_params(phi),
             assembly_map_b=assembly_map_b,
             precomputed_jacobian_nnz=jacobian_nnz,
+            dep_dofs=constraints.dep_dofs,
         )
 
-    jit_jacobian_diag_wo_constraints = jax.jit(calculate_jacobian_diag_wo_constraints)
-    
-        # Function that produces diag(J(u)) without Dirichlet BCs and MPCs applied
-    def jacobian_diag_func_wo_constraints(phi, x):
-        return jit_jacobian_diag_wo_constraints(
-            u_f=jnp.array(x, copy=True),
-            element_residual_func=element_residual_func,
-            ebc=ebc_with_material_params(phi),
-            assembly_map_b=assembly_map_b,
-        )
-
-    #these are from linear
-    R_w_dirichlet = lambda phi, x: residual_func_w_constraints(
-                    phi, x, *args, **kwargs
-                )
-
-    #these are from linear, figure out where they need to be redefined
-    J_w_dirichlet = lambda phi, x: apply_dirichlet_bcs_lhs(
-                    jacobian_func_wo_constraints(phi, x, *args, **kwargs), constraints.dep_dofs
-                )
-
-    return R_w_dirichlet, J_w_dirichlet, jit_residual_isv
+    return R_w_dirichlet, J_w_dirichlet, residual_isv_func_w_constraints

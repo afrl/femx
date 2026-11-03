@@ -6,6 +6,11 @@ plot_comparison() writes three figures into the run's output folder:
   - model_comparsion_displacement.png  : same layout for the displacement magnitude |u|
 
 It reads the VTK series written during the run, so call it after the timed solve.
+
+plot_dmg_sensitivity() plots a single-material-point damage run (tests/test_dmg_grad.py,
+tests/test_fd_sensitivity.py) against applied strain, on 3x4 grids with the legend in the last panel:
+  - <prefix>_param_grads.png : p * ds11/dp of the 11 matrix parameters
+  - <prefix>_isvs.png        : the 11 ISVs
 """
 import multiprocessing
 import os
@@ -27,6 +32,18 @@ CMAP_ERROR = 'viridis'      # sequential colormap for |JAX - IGFEM|, scaled 0 to
 COLOR_IGFEM = '#4DA6FF'
 COLOR_JAX = '#F08080'
 DPI = 300
+
+# Matrix (epoxy) parameters and ISVs of damage_elastic_isotropic_vmap
+PARAM_NAMES = ['E', 'nu', 'P1', 'P2', 'mu_visc', 'eps_c', 'eps_t', 'sigmay_c', 'sigmay_t', 'H_ro', 'n_ro']
+ISV_TITLES = ['e11', 'e22', 'e12', 's11 (MPa)', 's22 (MPa)', 's12 (MPa)', 'D', 'Y',
+              r'tau0 (MPa$^{1/2}$)', 'vM0 (MPa)', 'dt (s)']
+SENS_LABEL = r'$p\,\partial \sigma_{11}/\partial p$ (MPa)'
+COLOR_AD = 'tab:red'
+CMAP_FD = 'viridis'   # FD step sizes, dark purple (largest h) to yellow (smallest h)
+COLOR_CURVE = 'black'
+# Onset markers: both gray, told apart by line style
+ONSET_STYLES = {'first yield':  {'color': 'gray', 'linestyle': '--'},
+                'damage onset': {'color': 'gray', 'linestyle': ':'}}
 
 
 def _read_step(path, cell, feature, keep_snapshot):
@@ -199,3 +216,111 @@ def plot_comparison(args, vtk_mesh, feature='damage', cell=20, num_t=5, workers=
                   show_cell_edges=show_cell_edges, triangulation=cell_triangulation(vtk_mesh),
                   error=np.linalg.norm(u_JAX - u_IGFEM, axis=-1))
     print(f'Saved plots to {out_dir}')
+
+
+def dmg_onsets(strain, isv_ti):
+    """{'first yield': strain, 'damage onset': strain} at the first step with vM0 > 0 and tau0 > 0."""
+    return {name: strain[np.argmax(isv_ti[:, i] > 0)]
+            for name, i in (('first yield', 9), ('damage onset', 8)) if np.any(isv_ti[:, i] > 0)}
+
+
+def plot_grid_vs_strain(strain, curves, titles, save_path, onsets, ylabel=None):
+    """Column k of every curve against strain (%) in panel k of a 3x4 grid, legend in the 12th panel.
+
+    curves : list of (values_tk, label, plot kwargs), drawn in order (later on top)
+    onsets : {name in ONSET_STYLES: strain (%)}, drawn as vertical lines in every panel
+    """
+    with matplotlib.rc_context({'font.size': 14}):
+        fig = Figure(figsize=(18, 11))
+        ax = fig.subplots(3, 4, sharex=True)
+        for k, title in enumerate(titles):
+            a = ax.flat[k]
+            for values_tk, label, style in curves:
+                a.plot(strain, values_tk[:, k], label=label, **style)
+            for name, x in onsets.items():
+                a.axvline(x, linewidth=1.2, label=name, zorder=0, **ONSET_STYLES[name])
+            a.set_title(title)
+            if ylabel is not None and k % 4 == 0:
+                a.set_ylabel(ylabel)
+        for a in ax[-1]:
+            a.set_xlabel(r'$\epsilon_{11}$ (%)')
+            a.xaxis.set_tick_params(labelbottom=True)
+
+        ax.flat[-1].axis('off')
+        handles, labels = ax.flat[0].get_legend_handles_labels()
+        ax.flat[-1].legend(handles, labels, loc='center', frameon=False, ncol=1 if len(handles) <= 8 else 2)
+        fig.tight_layout()
+        fig.savefig(save_path, bbox_inches='tight', dpi=DPI)
+
+
+def plot_dmg_sensitivity(strain, sens_tm, isv_ti, out_dir, prefix, label):
+    """Plot a single-material-point damage run: p * ds11/dp of the 11 parameters and the 11 ISVs.
+
+    strain  : applied e11 (fraction), shape (T,)
+    sens_tm : p * ds11/dp (MPa), shape (T, 11)
+    isv_ti  : ISVs after each step, shape (T, 11); vM0 > 0 and tau0 > 0 mark the yield and damage onsets
+    prefix  : file names are <prefix>_param_grads.png and <prefix>_isvs.png in out_dir
+    label   : legend entry of the curves, e.g. 'AD' or 'FD, h = 5e-02'
+    """
+    strain = 100 * np.asarray(strain)
+    onsets = dmg_onsets(strain, isv_ti)
+    style = {'color': COLOR_CURVE, 'linewidth': 2}
+    plot_grid_vs_strain(strain, [(sens_tm, label, style)], PARAM_NAMES,
+                        os.path.join(out_dir, f'{prefix}_param_grads.png'), onsets, ylabel=SENS_LABEL)
+    plot_grid_vs_strain(strain, [(isv_ti, label, style)], ISV_TITLES,
+                        os.path.join(out_dir, f'{prefix}_isvs.png'), onsets)
+    print(f'Saved plots to {out_dir}')
+
+
+def plot_param_sensitivity(sens_ad_m, sens_fd_hm, h, param_names, title, ylabel, save_path):
+    """Sensitivity of one scalar objective to each parameter: grouped bars of FD at every h and AD.
+
+    sens_ad_m  : AD p * dJ/dp, shape (M,)
+    sens_fd_hm : FD p * dJ/dp, shape (H, M), h from largest to smallest
+    FD bars use viridis from dark purple (largest h) to yellow (smallest h); AD is red.
+    """
+    n_bars = len(h) + 1
+    width = 0.8 / n_bars
+    x = np.arange(len(param_names))
+    shades = matplotlib.colormaps[CMAP_FD](np.linspace(0, 0.95, len(h)))
+    with matplotlib.rc_context({'font.size': 14}):
+        fig = Figure(figsize=(16, 6))
+        a = fig.subplots()
+        for i in range(len(h)):
+            a.bar(x + (i - (n_bars - 1) / 2) * width, sens_fd_hm[i], width, color=shades[i],
+                  label=f'FD, h = {h[i]:.0e}')
+        a.bar(x + (n_bars - 1) / 2 * width, sens_ad_m, width, color=COLOR_AD, label='AD')
+        a.axhline(0, color='gray', linewidth=0.8)
+        for b in x[:-1] + 0.5:
+            a.axvline(b, color='lightgray', linewidth=0.8, zorder=0)
+        a.set_xticks(x, param_names)
+        a.set_xlim(-0.5, len(param_names) - 0.5)
+        a.set_ylabel(ylabel)
+        a.set_title(title)
+        a.legend(loc='center left', bbox_to_anchor=(1.01, 0.5), frameon=False)
+        fig.tight_layout()
+        fig.savefig(save_path, bbox_inches='tight', dpi=DPI)
+    print(f'Saved {save_path}')
+
+
+def plot_grad_table(param_names, theta_m, grad_m, symbol, title, save_path):
+    """Gradient of one scalar objective J as a table image: p, dJ/dp and p * dJ/dp for each parameter.
+
+    theta_m : parameter values p, shape (M,)
+    grad_m  : dJ/dp, shape (M,)
+    symbol  : name of J in the column headers, e.g. 'S' for strength
+    """
+    rows = [[name, f'{p:.4g}', f'{g:.4g}', f'{p * g:.4g}'] for name, p, g in zip(param_names, theta_m, grad_m)]
+    header = ['parameter', 'p', rf'$\partial {symbol}/\partial p$', rf'$p\,\partial {symbol}/\partial p$ (MPa)']
+    fig = Figure(figsize=(8, 0.5 * (len(rows) + 2)))
+    a = fig.subplots()
+    a.axis('off')
+    # The table fills the axes, so the title sits right above it
+    table = a.table(cellText=rows, colLabels=header, cellLoc='center', bbox=[0, 0, 1, 1])
+    table.auto_set_font_size(False)
+    table.set_fontsize(14)
+    for j in range(len(header)):
+        table[0, j].set_facecolor('#E6E6E6')
+    a.set_title(title, fontsize=16)
+    fig.savefig(save_path, bbox_inches='tight', dpi=DPI)
+    print(f'Saved {save_path}')

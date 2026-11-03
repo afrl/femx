@@ -1,6 +1,6 @@
 from .profiling import *
 from .np_types import *
-from .basis_quadrature import FiniteElementType, CellType
+from .basis_quadrature import FiniteElementType, PolygonElementType, CellType
 
 import jax
 import jax.numpy as jnp
@@ -222,39 +222,47 @@ def tensor_to_voigt_indices(tensor_shape: tuple[int, ...]) -> tuple[int, ...]:
         )
 
 def get_element_areas(conn, points, fe_type):
-    # Shoelace formula over the perimeter; Basix numbers quadrilateral nodes lexicographically
-    if isinstance(fe_type, FiniteElementType) and fe_type.cell_type == CellType.quadrilateral:
-        conn = conn[:, [0, 1, 3, 2]]
+    """
+    Computes the area of each 2D element with the shoelace formula.
+
+    The formula is applied to the element's nodes taken in perimeter order.
+    Basix numbers quadrilateral nodes lexicographically (0, 1, 2, 3 is a
+    "Z" pattern), so the connectivity is reordered to (0, 1, 3, 2) to walk
+    the boundary. Triangles and polygons (``PolygonElementType``, any number
+    of vertices, e.g. pentagons) are assumed to already be listed in
+    perimeter order. Every column of ``conn`` is treated as a polygon vertex,
+    so only linear (corner-node-only) elements give correct areas.
+
+    Parameters
+    ----------
+    conn    : integer array with shape (N_e, N_n), node indices of each element
+    points  : float array with shape (N_v, 2), nodal coordinates
+    fe_type : element type of the batch: a ``FiniteElementType`` with a
+              triangle or quadrilateral cell (the latter triggers the node
+              reordering), or a ``PolygonElementType``.
+
+    Returns
+    -------
+    areas   : float array with shape (N_e,), non-negative element areas
+
+    Raises
+    ------
+    ValueError
+        If ``fe_type`` is not a triangle, quadrilateral or polygon element.
+    """
+    if isinstance(fe_type, FiniteElementType):
+        if fe_type.cell_type == CellType.quadrilateral:
+            conn = conn[:, [0, 1, 3, 2]]
+        elif fe_type.cell_type != CellType.triangle:
+            raise ValueError(
+                f"get_element_areas supports triangle, quadrilateral and polygon elements, "
+                f"got cell type {fe_type.cell_type}."
+            )
+    elif not isinstance(fe_type, PolygonElementType):
+        raise ValueError(
+            f"get_element_areas supports triangle, quadrilateral and polygon elements, "
+            f"got {type(fe_type).__name__}."
+        )
     p = points[conn]
     p_next = jnp.roll(p, -1, axis=1)
     return 0.5 * jnp.abs(jnp.sum(p[..., 0] * p_next[..., 1] - p_next[..., 0] * p[..., 1], axis=1))
-
-
-def compute_stress_strain_curve(ISV_be_history, element_batches, points):
-    w_s11_sum = 0
-    w_s22_sum = 0
-    w_s12_sum = 0
-    total_area = 0
-    for idx, ISV in enumerate(ISV_be_history):
-        # ISV has shape (time, num_cells, Q, num_state_vars)
-        # Average over Q for each cell
-        s11_cell = ISV[..., 3] # (time, num_cells)
-        s22_cell = ISV[..., 4] # (time, num_cells)
-        s12_cell = ISV[..., 5] # (time, num_cells)
-        
-        conn = element_batches[idx].connectivity_en
-        area = get_element_areas(conn, points, element_batches[idx].fe_type)
-        
-        w_s11_t = jnp.sum(s11_cell * area[None, :], axis=1)
-        w_s22_t = jnp.sum(s22_cell * area[None, :], axis=1)
-        w_s12_t = jnp.sum(s12_cell * area[None, :], axis=1)
-        
-        w_s11_sum += w_s11_t
-        w_s22_sum += w_s22_t
-        w_s12_sum += w_s12_t
-        total_area += jnp.sum(area)
-        
-    s11_global = w_s11_sum / total_area
-    s22_global = w_s22_sum / total_area
-    s12_global = w_s12_sum / total_area
-    return s11_global, s22_global, s12_global

@@ -12,7 +12,6 @@ import jax
 import jax.numpy as jnp
 import optax
 jax.config.update("jax_enable_x64", True)   #   True or comment out both works. False cause incorrect result
-from fe_jax.post_pred import *
 from fe_jax.write_vtk import *
 from fe_jax.linear_elasticity_dmg import *
 from fe_jax.fea import convert_boundary_conditions, solve_bvp_quasi, SolverOptions, LinearSolverType
@@ -289,14 +288,13 @@ def test_ad():
 
             flat_internal_state = jnp.hstack([isv.ravel() for isv in new_internal_state_beqi])
             ebc_next = ebc_curr.replace(internal_state=flat_internal_state)
-            ISV_be = compute_ISV_be(new_internal_state_beqi)
+            ISV_be = calculate_element_averaged_state(new_internal_state_beqi)
 
             return (u, ebc_next), (u, ISV_be)
 
         init_carry = (u_prev, ebc_updated)
         final_carry, (u_history, ISV_be_history) = jax.lax.scan(step_fn, init_carry, (all_g, all_loads))
-        # s11_global = compute_stress_strain_curve(ISV_be_history, element_batches, points)
-        s11_global, s22_global, s12_global = compute_stress_strain_curve(ISV_be_history, element_batches, points)
+        s11_global, s22_global, s12_global = calculate_global_stress(ISV_be_history, element_batches, points)
 
         obj = -jnp.max(s11_global)
         # loss = jnp.mean((s_match - jnp.stack([s11_global, s22_global, s12_global], axis=1)) ** 2)

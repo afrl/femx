@@ -9,7 +9,6 @@ import os
 import pyvista as pv
 import time
 jax.config.update("jax_enable_x64", True)   #   True or comment out both works. False cause incorrect result
-from fe_jax.post_pred import *
 from fe_jax.write_vtk import *
 from fe_jax.plot_results import plot_comparison
 from fe_jax.linear_elasticity_dmg import *
@@ -256,7 +255,7 @@ def test_fea_solve_dmg():
         u_i = u_history[i]
         ISV_be_i = jax.tree_util.tree_map(lambda x: x[i], ISV_be_history)
 
-    s11_global, s22_global, s12_global = compute_stress_strain_curve(ISV_be_history, element_batches, points)
+    s11_global, s22_global, s12_global = calculate_global_stress(ISV_be_history, element_batches, points)
 
     exit(1)
     # Post-process: write VTK files

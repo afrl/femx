@@ -46,7 +46,7 @@ def write2VTK_avg(args,vtk_mesh,u,element_batches,cell_ids_b):
         
         # TODO double check if this is still needed. might be double dipping in fea.py
         # Apply damage to stress at each quadrature point (only for matrix elements, which are the
-        # batches with the 11 damage-model state variables; fibers have 7, see compute_ISV_be)
+        # batches with the 11 damage-model state variables; fibers have 7, see calculate_element_averaged_state)
         if state_q.shape[-1] >= 8:
             stress_dmg_q = stress_eff_q * (1 - damage_q[:, :, np.newaxis])
         else:

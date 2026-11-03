@@ -9,7 +9,6 @@ import os
 import pyvista as pv
 import time
 jax.config.update("jax_enable_x64", True)   #   True or comment out both works. False cause incorrect result
-from fe_jax.post_pred import *
 from fe_jax.write_vtk import *
 from fe_jax.plot_results import plot_comparison
 # jax.config.update("jax_disable_jit", True)
@@ -21,7 +20,7 @@ def test_fea_solve_dmg():
     args = {}
     num_fib = 3200    # 1, 2, 4, 9, 16, 23, 33, 36, 46, 49, 60, 64, 100
     args['t_total']  = 500
-    args['dir_path'] = f"jetsci_t{args['t_total']}_{num_fib}fib"
+    args['dir_path'] = f"jetsci/jetsci_t{args['t_total']}_{num_fib}fib"
     args['strain_max'] = 0.012
     dt = 10/args['t_total']
 

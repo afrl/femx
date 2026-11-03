@@ -8,7 +8,6 @@ import os
 import pyvista as pv
 import time
 jax.config.update("jax_enable_x64", True)   #   True or comment out both works. False cause incorrect result
-from fe_jax.post_pred import *
 from fe_jax.write_vtk import *
 from fe_jax.plot_results import plot_comparison
 from fe_jax.linear_elasticity_dmg import *
@@ -22,7 +21,7 @@ def test_fea_solve_dmg():
     num_fib = 1    # 1, 2, 4, 9, 16, 23, 33, 36, 46, 49, 60, 64
     args['t_total']  = 500
     # args['dir_path'] = "debug"
-    args['dir_path'] = f"scan_t{args['t_total']}_{num_fib}fib"
+    args['dir_path'] = f"scan/scan_t{args['t_total']}_{num_fib}fib"
     args['strain_max'] = 0.012
     dt = 10/args['t_total']
 
@@ -169,9 +168,9 @@ def test_fea_solve_dmg():
     print('Start Deformation Loop')
     
     u_history, ISV_be_history = solve_bvp_quasi(
+        element_residual_func=linear_elasticity_residual,
         vertices_vd=points,
         element_batches=element_batches,
-        element_residual_func=linear_elasticity_residual,
         boundary_conditions=dirichlet_bcs,
         solver_options=SolverOptions(
             # linear_solve_type=LinearSolverType.DENSE_INVERSE_JNP,
@@ -198,7 +197,7 @@ def test_fea_solve_dmg():
         vtk_mesh.save(args['vtk_dir'] + f"/fea_solve_out_{time_step}.vtk")
     # zip_folder(args['vtk_dir'], args['vtk_dir']+'.zip')
 
-    s11_global, s22_global, s12_global = compute_stress_strain_curve(ISV_be_history, element_batches, points)
+    s11_global, s22_global, s12_global = calculate_global_stress(ISV_be_history, element_batches, points)
     # Save param_hist and loss_hist
     np.save(os.path.join(args['out_dir'], "stress_strain_curve.npy"), np.array([dxs/length*100,s11_global]))
     np.save(os.path.join(args['out_dir'], "s_history.npy"), np.array([s11_global,s22_global,s12_global]))

@@ -9,7 +9,6 @@ import os
 import pyvista as pv
 import time
 jax.config.update("jax_enable_x64", True)   #   True or comment out both works. False cause incorrect result
-from fe_jax.post_pred import *
 from fe_jax.write_vtk import *
 from fe_jax.plot_results import plot_comparison
 from fe_jax.linear_elasticity_dmg import *
@@ -24,7 +23,7 @@ def test_fea_solve_dmg():
     # num_fib = int(os.environ.get("NUM_FIB", 1))    # 1, 2, 4, 9, 16, 23, 33, 36, 46, 49, 60, 64, 100
     args['t_total']  = 500
     # args['dir_path'] = "debug_update"
-    args['dir_path'] = f"update_CG_t{args['t_total']}_{num_fib}fib"
+    args['dir_path'] = f"update_CG/update_CG_t{args['t_total']}_{num_fib}fib"
     args['strain_max'] = 0.012
     dt = 10/args['t_total']
 
@@ -231,7 +230,7 @@ def test_fea_solve_dmg():
 
         # Update the internal state variables in the element batch collection for the next time step
         ebc = ebc.replace(internal_state=jnp.hstack([isv.ravel() for isv in ISV_be]))
-        ISV_be1 = compute_ISV_be(ISV_be)
+        ISV_be1 = calculate_element_averaged_state(ISV_be)
         print("Time step =", i)
 
         # write and save to vtk
