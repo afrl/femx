@@ -78,6 +78,7 @@ def _calculate_jacobian_batch_element_kernel(
     constitutive_model: jax.tree_util.Partial,
     u_enu: jnp.ndarray,
     x_end: jnp.ndarray,
+    phi_qn: jnp.ndarray,
     dphi_dxi_qnp: jnp.ndarray,
     W_q: jnp.ndarray,
     material_params: jnp.ndarray,
@@ -117,14 +118,26 @@ def _calculate_jacobian_batch_element_kernel(
     @jax.jit
     def residual_kernel(u_t, x_nd, material_params, internal_state_qi):
         u_nd = u_t.reshape(N, U)
+        resid_args=[]
+        if is_required(element_residual_func,"u_nd"):
+            resid_args.append(u_nd)
+        if is_required(element_residual_func,"x_nd"):
+            resid_args.append(x_nd)
+        if is_required(element_residual_func,"phi_qn"):
+            resid_args.append(phi_qn)
+        if is_required(element_residual_func,"dphi_dxi_qnp"):
+            resid_args.append(dphi_dxi_qnp)
+        if is_required(element_residual_func,"W_q"):
+            resid_args.append(W_q)
+        if is_required(element_residual_func,"material_params"):
+            resid_args.append(material_params)
+        if is_required(element_residual_func,"internal_state_qi"):
+            resid_args.append(internal_state)
+        if is_required(element_residual_func,"constitutive_model"):
+            resid_args.append(constitutive_model)
+
         R_nu = element_residual_func(
-            u_nd=u_nd,
-            x_nd=x_nd,
-            dphi_dxi_qnp=dphi_dxi_qnp,
-            W_q=W_q,
-            material_params=material_params,
-            internal_state_qi=internal_state_qi,
-            constitutive_model=constitutive_model,
+            *resid_args
         )[0]
         return R_nu.reshape(N * U)
 
@@ -154,6 +167,7 @@ def _calculate_jacobian_coo_terms_batch(
     material_params: jnp.ndarray,
     internal_state: jnp.ndarray,
     x_end: jnp.ndarray,
+    phi_qn:jnp.ndarray,
     dphi_dxi_qnp: jnp.ndarray,
     W_q: jnp.ndarray,
     dof_map_enu: jnp.ndarray,
@@ -175,6 +189,7 @@ def _calculate_jacobian_coo_terms_batch(
         constitutive_model=constitutive_model,
         u_enu=u_enu,
         x_end=x_end,
+        phi_qn=phi_qn,
         dphi_dxi_qnp=dphi_dxi_qnp,
         W_q=W_q,
         material_params=material_params,
@@ -206,6 +221,7 @@ def calculate_jacobian_wo_constraints(
                 material_params=ebc.get_material_params(i),
                 internal_state=ebc.get_internal_state(i),
                 x_end=ebc.get_x(i),
+                phi_qn=ebc.get_phi(i),
                 dphi_dxi_qnp=ebc.get_dphi_dxi(i),
                 W_q=ebc.get_weights(i),
                 dof_map_enu=ebc.get_dof_map(i),
@@ -241,6 +257,7 @@ def _calculate_jacobian_diag_batch_element_kernel(
     constitutive_model: jax.tree_util.Partial,
     u_enu: jnp.ndarray,
     x_end: jnp.ndarray,
+    phi_qn: jnp.ndarray,
     dphi_dxi_qnp: jnp.ndarray,
     W_q: jnp.ndarray,
     material_params: jnp.ndarray,
@@ -280,14 +297,26 @@ def _calculate_jacobian_diag_batch_element_kernel(
     @jax.jit
     def residual_kernel(u_t, x_nd, material_params, internal_state):
         u_nd = u_t.reshape(N, U)
+        resid_args=[]
+        if is_required(element_residual_func,"u_nd"):
+            resid_args.append(u_nd)
+        if is_required(element_residual_func,"x_nd"):
+            resid_args.append(x_nd)
+        if is_required(element_residual_func,"phi_qn"):
+            resid_args.append(phi_qn)
+        if is_required(element_residual_func,"dphi_dxi_qnp"):
+            resid_args.append(dphi_dxi_qnp)
+        if is_required(element_residual_func,"W_q"):
+            resid_args.append(W_q)
+        if is_required(element_residual_func,"material_params"):
+            resid_args.append(material_params)
+        if is_required(element_residual_func,"internal_state_qi"):
+            resid_args.append(internal_state)
+        if is_required(element_residual_func,"constitutive_model"):
+            resid_args.append(constitutive_model)
+
         R_nu = element_residual_func(
-            u_nd=u_nd,
-            x_nd=x_nd,
-            dphi_dxi_qnp=dphi_dxi_qnp,
-            W_q=W_q,
-            material_params=material_params,
-            internal_state_qi=internal_state,
-            constitutive_model=constitutive_model,
+            *resid_args
         )[0]
         return R_nu.reshape(N * U)
 
@@ -325,6 +354,7 @@ def _calculate_jacobian_diag_coo_terms_batch(
     material_params: jnp.ndarray,
     internal_state: jnp.ndarray,
     x_end: jnp.ndarray,
+    phi_qn:jnp.ndarray,
     dphi_dxi_qnp: jnp.ndarray,
     W_q: jnp.ndarray,
     dof_map_enu: jnp.ndarray,
@@ -343,6 +373,7 @@ def _calculate_jacobian_diag_coo_terms_batch(
         constitutive_model=constitutive_model,
         u_enu=u_enu,
         x_end=x_end,
+        phi_qn=phi_qn,
         dphi_dxi_qnp=dphi_dxi_qnp,
         W_q=W_q,
         material_params=material_params,
@@ -373,6 +404,7 @@ def calculate_jacobian_diag_wo_constraints(
                 material_params=ebc.get_material_params(i),
                 internal_state=ebc.get_internal_state(i),
                 x_end=ebc.get_x(i),
+                phi_qn=ebc.get_phi(i),
                 dphi_dxi_qnp=ebc.get_dphi_dxi(i),
                 W_q=ebc.get_weights(i),
                 dof_map_enu=ebc.get_dof_map(i),
@@ -436,7 +468,7 @@ def _calculate_residual_wo_constraints_batch(
     if is_required(element_residual_func,"W_q"):
         resid_args.append(W_q)
         in_axes.append(None)
-    if is_required(element_residual_func,"material_params_qm"):
+    if is_required(element_residual_func,"material_params"):
         resid_args.append(material_params)
         in_axes.append(None if material_params.ndim == 1 else 0)
     if is_required(element_residual_func,"internal_state_qi"):

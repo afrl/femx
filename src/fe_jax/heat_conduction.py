@@ -43,7 +43,7 @@ def heat_conduction_residual(
     phi_qn: jnp.ndarray,
     dphi_dxi_qnp: jnp.ndarray,
     W_q: jnp.ndarray,
-    material_params_qm: jnp.ndarray,
+    material_params: jnp.ndarray,
     internal_state_qi: jnp.ndarray,
     constitutive_model: Callable,    
 ):
@@ -66,8 +66,8 @@ def heat_conduction_residual(
         in_axes.append(0)    
 
     if is_required(constitutive_model, "material_params_m"):
-        constitutive_args.append(material_params_qm)
-        in_axes.append(0 if material_params_qm.ndim==2 else None)
+        constitutive_args.append(material_params)
+        in_axes.append(0 if material_params.ndim==2 else None)
 
     if is_required(constitutive_model, "internal_state_i"):
         constitutive_args.append(internal_state_qi)

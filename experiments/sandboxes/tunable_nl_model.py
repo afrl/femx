@@ -19,8 +19,17 @@ def custom_nl_scalar_diffusion(nl_kernel):
 
 
 if __name__=="__main__":
-    U = 1
-    n=200
+    U = 1 # Solution dimensionality (always 1)
+    n=200 # Mesh size (nxn square grid)
+    constitutive_model=custom_nl_scalar_diffusion(
+        lambda x: 1+60*x**2+5*x**4+1.4*x**6
+    ) # Should be even, positive
+    PARAM_RANGE_FACTOR = 1 # number of orders of magnitude parameters span (upper bound 1e11)
+    BC_SCALE = 1 # upper bound for dirichlet BC values
+
+    rng = np.random.default_rng() # for random BC and parameter vals
+
+
     vertices_vd = np.vstack(
         [
             np.ravel(vec)
@@ -58,10 +67,7 @@ if __name__=="__main__":
         quadrature_type=QuadratureType.default,
         quadrature_degree=2,
     )    
-    constitutive_model=custom_nl_scalar_diffusion(
-        lambda x: x+20*x**3+1*x**5+0.2*x**7
-    )
-    rng = np.random.default_rng(1423232)
+
     E = cells.shape[0]  # number of elements
     Q = get_quadrature(fe_type=fe_type)[0].shape[0]  # number of quadrature points
     element_batches = [
@@ -70,27 +76,29 @@ if __name__=="__main__":
             n_dofs_per_basis=U,
             connectivity_en=cells,
             constitutive_model=constitutive_model,
-            material_params=10**(11-0.1*rng.random((E,Q,1))),
+            material_params=10**(11-PARAM_RANGE_FACTOR * rng.random((E,Q,1))),
         ),
     ]
+
     dirichlet_bcs=[]
     for j in range(U):
         dirichlet_bcs = dirichlet_bcs + [
-            DirichletBC(index=i, component=j, value=rng.random())
+            DirichletBC(index=i, component=j, value=BC_SCALE * rng.random())
             for i in boundary_points
         ]
-
+    u_0_g = jnp.full(shape=(vertices_vd.shape[0]*element_batches[0].n_dofs_per_basis),fill_value=jnp.mean(jnp.array([bc.value for bc in dirichlet_bcs]))) 
     u, residual, element_batch = solve_bvp(
         element_residual_func=heat_conduction_residual,
         vertices_vd=vertices_vd,
         element_batches=element_batches,
-        u_0_g=jnp.full(shape=(vertices_vd.shape[0]*element_batches[0].n_dofs_per_basis),fill_value=jnp.mean(jnp.array([bc.value for bc in dirichlet_bcs]))),
+        u_0_g=u_0_g,
         boundary_conditions=dirichlet_bcs,
         plot_convergence=False,
         solver_options=SolverOptions(
             linear_solve_type=LinearSolverType.CG_JAX_SCIPY_W_INFO,
             nonlinear_max_iter=200,
-            linear_relative_tol=1e-1
-            # linear_precond_type=fea.PreconditionerType.JACOBI,
+            linear_relative_tol=1e-10,
+            linear_max_iter=1000,
+            # linear_precond_type=PreconditionerType.JACOBI,
         ),
     )
