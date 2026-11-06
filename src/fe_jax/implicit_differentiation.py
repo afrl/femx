@@ -3,7 +3,7 @@ import jax.numpy as jnp
 from functools import partial
 import jax.experimental.sparse as jsparse
 
-from .sparse_linear_solve import LinearSolverType
+from .sparse_linear_solve import LinearSolverType, PreconditionerType
 from .fea import (
     solve_nonlinear_quasi_step,
     calculate_jacobian_wo_constraints,
@@ -124,6 +124,31 @@ def _solve_bwd(jacobian_nnz, res, g_outputs):
             return R
         J_dense = jax.jacfwd(R_w_dirichlet)(u_f)
         lambda_R = jnp.linalg.solve(J_dense.T, rhs)
+    elif solver_options.linear_solve_type in (
+        LinearSolverType.CG_JAX_SCIPY, LinearSolverType.CG_JAX_SCIPY_W_INFO,
+    ):
+        if solver_options.linear_precond_type == PreconditionerType.JACOBI:
+            # The transpose has the same diagonal. Scatter duplicate sparse
+            # entries by addition; never materialize a dense matrix here.
+            diagonal = jnp.zeros_like(rhs).at[J_f_constrained.row].add(
+                jnp.where(J_f_constrained.row == J_f_constrained.col,
+                          J_f_constrained.data, 0),
+            )
+            preconditioner = lambda v: v / diagonal
+        elif solver_options.linear_precond_type == PreconditionerType.NONE:
+            preconditioner = None
+        else:
+            raise ValueError(
+                "The JAX CG implicit adjoint supports NONE or JACOBI "
+                f"preconditioning, received {solver_options.linear_precond_type}. "
+                "Set linear_precond_type=PreconditionerType.JACOBI or NONE."
+            )
+        lambda_R, _ = jax.scipy.sparse.linalg.cg(
+            A, rhs, M=preconditioner,
+            tol=solver_options.linear_relative_tol,
+            atol=solver_options.linear_absolute_tol,
+            maxiter=solver_options.linear_max_iter,
+        )
     else:
         lambda_R, _ = jax.scipy.sparse.linalg.gmres(A, rhs, tol=1e-6, maxiter=100)
     

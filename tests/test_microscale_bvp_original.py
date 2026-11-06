@@ -102,7 +102,7 @@ def test_microscale_bvp():
             fe_type=fe_type,
             n_dofs_per_basis=2,
             connectivity_en=matrix_cells,
-            constitutive_model=elastic_isotropic,
+            constitutive_model=damage_elastic_isotropic_vmap,
             material_params=matrix_mat_params_eqm,
         ),
         ElementBatch(

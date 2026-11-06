@@ -7,6 +7,8 @@ from helper import *
 import os
 import pyvista as pv
 import time
+import json
+import dataclasses
 jax.config.update("jax_enable_x64", True)   #   True or comment out both works. False cause incorrect result
 from fe_jax.post_pred import *
 from fe_jax.write_vtk import *
@@ -17,8 +19,13 @@ import jetsci
 
 def test_fea_solve_dmg():
     args = {}
-    num_fib = '49'
-    args['t_total']  = 500
+    comparison_backend = os.environ.get("FEA_DAMAGE_COMPARE_WORKER")
+    if comparison_backend is not None and comparison_backend not in ("PETSc", "JAX"):
+        raise ValueError("FEA_DAMAGE_COMPARE_WORKER must be PETSc or JAX.")
+    num_fib = os.environ.get("FEA_DAMAGE_FIBERS", "49")
+    args['t_total'] = int(os.environ.get("FEA_DAMAGE_TIMESTEPS", "500"))
+    if args['t_total'] < 1:
+        raise ValueError("FEA_DAMAGE_TIMESTEPS must be positive.")
     args['dir_path'] = f"nonlinear_IGFEM_vmap_t{args['t_total']}_{num_fib}fib_JetSCI"
     args['strain_max'] = 0.012
     dt = 10/args['t_total']
@@ -26,13 +33,15 @@ def test_fea_solve_dmg():
     # Create the directory (and any necessary parent directories)
     args['out_dir'] = os.path.join("tests/output",args['dir_path'])
     args['vtk_dir'] = os.path.join(args['out_dir'],"vtks")
-    os.makedirs(args['out_dir'], exist_ok=True)
-    os.makedirs(args['vtk_dir'], exist_ok=True)
+    if comparison_backend is None:
+        os.makedirs(args['out_dir'], exist_ok=True)
+        os.makedirs(args['vtk_dir'], exist_ok=True)
 
     # Read in the mesh (IGFEM)
     mesh     = pv.read(f'tests/meshes/IGFEM_{num_fib}fib.vtk')
     vtk_mesh = mesh.copy()
-    vtk_mesh.save(args['vtk_dir'] + f"/fea_solve_out_{0}.vtk")
+    if comparison_backend is None:
+        vtk_mesh.save(args['vtk_dir'] + f"/fea_solve_out_{0}.vtk")
 
     points = np.array(mesh.points, dtype=np.float64)[:,0:2]
     cells  = np.array(mesh.cells, dtype=np.uint64)
@@ -242,56 +251,222 @@ def test_fea_solve_dmg():
         linear_absolute_tol=1e-14,
     )
 
+    runtime_check = None
+    if comparison_backend is not None:
+        from damage_runtime_support import DamageRuntimeCheck
+        jax_format = os.environ.get("FEA_DAMAGE_JAX_FORMAT", "matrix_free")
+        if jax_format not in ("matrix_free", "csr"):
+            raise ValueError("FEA_DAMAGE_JAX_FORMAT must be matrix_free or csr; no fallback.")
+        requested_restart = int(os.environ.get("FEA_DAMAGE_GMRES_RESTART", "30"))
+        if requested_restart < 1:
+            raise ValueError("FEA_DAMAGE_GMRES_RESTART must be a positive integer.")
+        gmres_restart = min(requested_restart, int(u_prev.size))
+        method = os.environ.get("FEA_DAMAGE_METHOD", "cg")
+        pc = os.environ.get("FEA_DAMAGE_PC", "jacobi")
+        if method not in ("cg", "gmres") or pc not in ("none", "jacobi", "ilu"):
+            raise ValueError("Set FEA_DAMAGE_METHOD=cg|gmres and FEA_DAMAGE_PC=none|jacobi|ilu. These shared settings select both backends; no fallback is performed.")
+        petsc_method = os.environ.get("FEA_DAMAGE_PETSC_METHOD", method)
+        petsc_pc = os.environ.get("FEA_DAMAGE_PETSC_PC", pc)
+        jax_method = os.environ.get("FEA_DAMAGE_JAX_METHOD", method)
+        jax_pc = os.environ.get("FEA_DAMAGE_JAX_PC", pc)
+        petsc_methods = {"cg": jetsci.LinearSolverType.PETSC_CG,
+                         "gmres": jetsci.LinearSolverType.PETSC_GMRES,
+                         "lgmres": jetsci.LinearSolverType.PETSC_LGMRES}
+        petsc_pcs = {"none": jetsci.PreconditionerType.PETSC_NONE,
+                     "jacobi": jetsci.PreconditionerType.PETSC_JACOBI,
+                     "ilu": jetsci.PreconditionerType.PETSC_ILU,
+                     "icc": jetsci.PreconditionerType.PETSC_ICC}
+        jax_methods = {
+            ("cg", "matrix_free"): LinearSolverType.CG_JAX_SCIPY_W_INFO,
+            ("cg", "csr"): LinearSolverType.CG_JAX_SCIPY_CSR,
+            ("gmres", "matrix_free"): LinearSolverType.GMRES_JAX_SCIPY,
+            ("gmres", "csr"): LinearSolverType.GMRES_JAX_SCIPY_CSR,
+        }
+        jax_pcs = {"none": PreconditionerType.NONE, "jacobi": PreconditionerType.JACOBI,
+                   "ilu": PreconditionerType.ILU_CUPY}
+        if petsc_method not in petsc_methods or petsc_pc not in petsc_pcs:
+            raise ValueError("Set FEA_DAMAGE_PETSC_METHOD=cg|gmres|lgmres and FEA_DAMAGE_PETSC_PC=none|jacobi|ilu|icc; no fallback.")
+        if (jax_method, jax_format) not in jax_methods or jax_pc not in jax_pcs:
+            raise ValueError("Set FEA_DAMAGE_JAX_METHOD=cg|gmres and FEA_DAMAGE_JAX_PC=none|jacobi|ilu; no fallback.")
+        petsc_solver_options = dataclasses.replace(
+            petsc_solver_options, linear_solver_type=petsc_methods[petsc_method],
+            linear_preconditioner_type=petsc_pcs[petsc_pc],
+        )
+        common = {name: getattr(petsc_solver_options, name) for name in (
+            "nonlinear_max_iter", "nonlinear_relative_tol", "nonlinear_absolute_tol",
+            "linear_max_iter", "linear_relative_tol", "linear_absolute_tol",
+        )}
+        jax_solver_options = SolverOptions(
+            linear_solve_type=jax_methods[jax_method, jax_format],
+            linear_precond_type=jax_pcs[jax_pc],
+            gmres_solve_method="incremental", gmres_stopping_test="true_residual",
+            gmres_restart=gmres_restart,
+            ilu_synchronize=True, **common,
+        )
+        check_rtol = float(os.environ.get("FEA_DAMAGE_CHECK_RTOL", "1e-4"))
+        check_atol = float(os.environ.get("FEA_DAMAGE_CHECK_ATOL", "1e-8"))
+        if not np.isfinite([check_rtol, check_atol]).all() or min(check_rtol, check_atol) < 0:
+            raise ValueError("Damage agreement tolerances must be finite and nonnegative.")
+        config = dict(
+            fibers=num_fib, timesteps=args['t_total'], strain_max=args['strain_max'], dt=dt,
+            dofs=int(u_prev.size), method=method, pc=pc, jax_format=jax_format,
+            petsc_method=petsc_method, petsc_pc=petsc_pc,
+            jax_method=jax_method, jax_pc=jax_pc,
+            jax_gmres_solve_method="incremental", jax_gmres_stopping="true_residual",
+            gmres_restart_requested=requested_restart,
+            petsc_gmres_restart=gmres_restart if petsc_method in ("gmres", "lgmres") else None,
+            jax_gmres_restart=gmres_restart if jax_method == "gmres" else None,
+            jax_ilu_device_synchronization=jax_pc == "ilu",
+            common_tolerances=common, check_rtol=check_rtol, check_atol=check_atol,
+            x64=bool(jax.config.x64_enabled),
+            scope="sum of blocked increment solves including per-step preprocessing, assembly and state update; mesh setup, validation, reference I/O and final solver destruction excluded",
+        )
+        runtime_check = DamageRuntimeCheck(comparison_backend, os.environ["FEA_DAMAGE_COMPARE_DIR"], check_rtol, check_atol)
+        print("DAMAGE_RUNTIME_CONFIG " + json.dumps(dict(backend=comparison_backend, **config)), flush=True)
+
     try:
         for i in range(1,args['t_total']+1):
             dirichlet_values[n_LHS:n_vals] = strain_increment * i
             for bc in range(len(dirichlet_bcs)):
                 dirichlet_bcs[bc].value = dirichlet_values[bc]
 
-            (
-                ebc,
-                assembly_map_b,
-                constraint_system,
-                jacobian_nnz,
-                element_residual_func,
-                f_ext,
-            ) = preprocess_bvp(
-                vertices_vd=points,
-                element_batches=element_batches,
-                element_residual_func=linear_elasticity_residual,
-                boundary_conditions=dirichlet_bcs,
-                multipoint_constraints=None,
-            )
-            residual_for_phi, jacobian_for_phi, residual_isv_for_phi = (
-                build_nonlinear_objects(
-                    element_residual_func=element_residual_func,
-                    ebc=ebc,
-                    assembly_map_b=assembly_map_b,
-                    jacobian_nnz=jacobian_nnz,
-                    u_0_g=u_prev,
-                    constraints=constraint_system,
-                    f_ext=f_ext,
+            if runtime_check is not None:
+                incoming_batches = list(element_batches)
+                jax.block_until_ready((u_prev, [batch.internal_state for batch in incoming_batches]))
+                step_start = time.perf_counter()
+            if comparison_backend == "JAX":
+                u, residual, element_batches = solve_bvp(
+                    element_residual_func=linear_elasticity_residual,
+                    vertices_vd=points, element_batches=list(incoming_batches),
+                    u_0_g=u_prev, boundary_conditions=dirichlet_bcs,
+                    solver_options=jax_solver_options,
                 )
-            )
+            else:
+                (
+                    ebc,
+                    assembly_map_b,
+                    constraint_system,
+                    jacobian_nnz,
+                    element_residual_func,
+                    f_ext,
+                ) = preprocess_bvp(
+                    vertices_vd=points,
+                    element_batches=element_batches,
+                    element_residual_func=linear_elasticity_residual,
+                    boundary_conditions=dirichlet_bcs,
+                    multipoint_constraints=None,
+                )
+                residual_for_phi, jacobian_for_phi, residual_isv_for_phi = (
+                    build_nonlinear_objects(
+                        element_residual_func=element_residual_func,
+                        ebc=ebc,
+                        assembly_map_b=assembly_map_b,
+                        jacobian_nnz=jacobian_nnz,
+                        u_0_g=u_prev,
+                        constraints=constraint_system,
+                        f_ext=f_ext,
+                    )
+                )
 
-            # `phi` remains an explicit argument so this follows the public
-            # differentiable-solve path used by applications that differentiate
-            # with respect to material parameters.
-            phi = ebc.material_params
-            u, petsc_solver_options = jetsci.differentiable_solve(
-                petsc_solver_options,
-                residual_for_phi,
-                jacobian_for_phi,
-                u_prev,
-                phi,
-            )
-            residual, new_internal_state_eqi = residual_isv_for_phi(phi, u)
-            element_batches = [
-                batch.replace(internal_state=internal_state)
-                for batch, internal_state in zip(
-                    element_batches, new_internal_state_eqi, strict=True
+                # `phi` remains an explicit argument so this follows the public
+                # differentiable-solve path used by applications that differentiate
+                # with respect to material parameters.
+                phi = ebc.material_params
+                if (runtime_check is not None
+                        and petsc_method in ("gmres", "lgmres")
+                        and "FEA_DAMAGE_GMRES_RESTART" in os.environ):
+                    # Configure the live KSP before the first public solve,
+                    # without running a separate initialization solve. This
+                    # test-level setting survives the public API's reuse path.
+                    if petsc_solver_options.solver_key is None:
+                        live_solver, petsc_solver_options = jetsci.build_solver_with_reuse(
+                            petsc_solver_options,
+                            jax.tree_util.Partial(residual_for_phi, phi),
+                            jax.tree_util.Partial(jacobian_for_phi, phi), u_prev,
+                        )
+                    else:
+                        live_solver, _ = jetsci.petsc_snes.solver_lifecycle.get_petsc_solver_objects_from_key(
+                            petsc_solver_options.solver_key,
+                        )
+                    live_solver.snes.getKSP().setGMRESRestart(gmres_restart)
+                u, petsc_solver_options = jetsci.differentiable_solve(
+                    petsc_solver_options,
+                    residual_for_phi,
+                    jacobian_for_phi,
+                    u_prev,
+                    phi,
                 )
-            ]
+                residual, new_internal_state_eqi = residual_isv_for_phi(phi, u)
+                element_batches = [
+                    batch.replace(internal_state=internal_state)
+                    for batch, internal_state in zip(
+                        element_batches, new_internal_state_eqi, strict=True
+                    )
+                ]
+
+            if runtime_check is not None:
+                jax.block_until_ready((u, residual, [batch.internal_state for batch in element_batches]))
+                elapsed = time.perf_counter() - step_start
+                # Rebuild an independent residual with the INCOMING state, not
+                # the state just produced by this increment. All checks are untimed.
+                check_ebc, check_maps, check_constraints, check_nnz, check_func, check_force = preprocess_bvp(
+                    vertices_vd=points, element_batches=incoming_batches,
+                    element_residual_func=linear_elasticity_residual,
+                    boundary_conditions=dirichlet_bcs, multipoint_constraints=None,
+                )
+                check_residual, _, _ = build_nonlinear_objects(
+                    element_residual_func=check_func, ebc=check_ebc, assembly_map_b=check_maps,
+                    jacobian_nnz=check_nnz, u_0_g=u_prev, constraints=check_constraints, f_ext=check_force,
+                )
+                initial_norm = float(jnp.linalg.norm(check_residual(check_ebc.material_params, u_prev)))
+                final_norm = float(jnp.linalg.norm(check_residual(check_ebc.material_params, u)))
+                bound = max(common["nonlinear_absolute_tol"], common["nonlinear_relative_tol"] * initial_norm)
+
+                def report_failure():
+                    # Failure-only diagnostics: the solve and its timer have
+                    # finished, and the live SNES still belongs to this step.
+                    print("DAMAGE_FAILED_STEP " + json.dumps(dict(
+                        backend=comparison_backend, step=i,
+                        prescribed_displacement=float(strain_increment * i),
+                        correction_norm=float(jnp.linalg.norm(u-u_prev)),
+                        incoming_max_matrix_damage=max(
+                            (float(jnp.max(batch.internal_state[..., 6]))
+                             for batch in incoming_batches[:2] if batch.internal_state.size), default=0.0),
+                        settings=config,
+                    )), flush=True)
+                    if comparison_backend == "PETSc":
+                        from petsc4py import PETSc
+                        solver, _ = jetsci.petsc_snes.solver_lifecycle.get_petsc_solver_objects_from_key(
+                            petsc_solver_options.solver_key,
+                        )
+                        snes = solver.snes
+                        ksp = snes.getKSP()
+
+                        def enum_name(enum, value):
+                            return "|".join(name for name in dir(enum)
+                                            if not name.startswith("_")
+                                            and isinstance(getattr(enum, name), int)
+                                            and getattr(enum, name) == int(value)) or "UNKNOWN"
+
+                        print("DAMAGE_PETSC_FAILURE " + json.dumps(dict(
+                            step=i, snes_reason=int(snes.getConvergedReason()),
+                            snes_reason_name=enum_name(PETSc.SNES.ConvergedReason, snes.getConvergedReason()),
+                            newton_iterations=int(snes.getIterationNumber()),
+                            snes_function_norm=float(snes.getFunctionNorm()),
+                            ksp_reason=int(ksp.getConvergedReason()),
+                            ksp_reason_name=enum_name(PETSc.KSP.ConvergedReason, ksp.getConvergedReason()),
+                            last_ksp_iterations=int(ksp.getIterationNumber()),
+                            total_ksp_iterations=int(snes.getLinearSolveIterations()),
+                            ksp_reported_residual=float(ksp.getResidualNorm()),
+                            ksp_type=ksp.getType(), pc_type=ksp.getPC().getType(),
+                            pc_side=enum_name(PETSc.PC.Side, ksp.getPCSide()),
+                            norm_type=enum_name(PETSc.KSP.NormType, ksp.getNormType()),
+                            ksp_tolerances=list(ksp.getTolerances()),
+                        )), flush=True)
+                        ksp.view()
+
+                runtime_check.step(i, elapsed, u, element_batches, initial_norm, final_norm, bound,
+                                   on_failure=report_failure)
             u_prev = u
 
             print("Time step =", i)
@@ -304,6 +479,8 @@ def test_fea_solve_dmg():
         if solver_key is not None:
             jetsci.petsc_snes.solver_lifecycle.destroy_petsc_solver(solver_key)
     # zip_folder(args['vtk_dir'], args['vtk_dir']+'.zip')
+    if runtime_check is not None:
+        runtime_check.finish(config)
     n_total_dofs = u.shape[0]
 
     return n_total_dofs, args['out_dir']
@@ -318,6 +495,7 @@ if __name__ == "__main__":
     total_time = t_end - t_start
     print("Time used:", total_time)
 
-    with open(os.path.join(out_dir, "statistics.txt"), "w") as f:
-        f.write(f"Number of dofs: {n_total_dofs}\n")
-        f.write(f"Total Solver time: {total_time} seconds\n")
+    if os.environ.get("FEA_DAMAGE_COMPARE_WORKER") is None:
+        with open(os.path.join(out_dir, "statistics.txt"), "w") as f:
+            f.write(f"Number of dofs: {n_total_dofs}\n")
+            f.write(f"Total Solver time: {total_time} seconds\n")

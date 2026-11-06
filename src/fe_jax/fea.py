@@ -596,6 +596,7 @@ def solve_nonlinear_step(
     constraints: ConstraintSystem,
     solver_options: SolverOptions,
     f_ext,
+    resource_owner=None,
 ):
     """
     Solve the linearized system of equations emerging from the governing equations.
@@ -677,6 +678,9 @@ def solve_nonlinear_step(
     R_f, new_internal_state_beqi = residual_isv_func_w_constraints(u_f=u_0_g)
     initial_R_f_norm = jnp.linalg.norm(R_f)
 
+    if solver_options.linear_diagnostics:
+        jax.debug.print("BVP_JAX_NEWTON_INITIAL residual={r}", r=initial_R_f_norm, ordered=True)
+
     def while_cond(args) -> bool:
         nl_iteration, u_f, R_f, new_internal_state_beqi, info = args
         absolute_error = jnp.linalg.norm(R_f)
@@ -697,6 +701,8 @@ def solve_nonlinear_step(
         """
         return (
             (nl_iteration < solver_options.nonlinear_max_iter)
+            & jnp.isfinite(absolute_error)
+            & jnp.isfinite(initial_R_f_norm)
             & (relative_error > solver_options.nonlinear_relative_tol)
             & (absolute_error > solver_options.nonlinear_absolute_tol)
         )
@@ -729,11 +735,21 @@ def solve_nonlinear_step(
             check_consistency=False,
             x_0=u_f,
             f_ext=f_ext,
+            resource_owner=resource_owner,
         )
 
         u_f = u_f + delta_u
         # u_f = constraints.apply_to_solution(u_f)
         R_f, new_internal_state_beqi = residual_isv_func_w_constraints(u_f=u_f)
+
+        if solver_options.linear_diagnostics:
+            jax.debug.print(
+                "BVP_JAX_NEWTON_STEP step={step} residual={r} relative_residual={rel} "
+                "correction_norm={du} finite={finite}",
+                step=nl_iteration + 1, r=jnp.linalg.norm(R_f),
+                rel=jnp.linalg.norm(R_f) / initial_R_f_norm,
+                du=jnp.linalg.norm(delta_u), finite=jnp.all(jnp.isfinite(u_f)), ordered=True,
+            )
 
         return (
             nl_iteration + 1,
@@ -984,6 +1000,7 @@ def preprocess_bvp(
         f_ext,
     )
 
+@with_forward_solver_resources
 def solve_bvp(
     vertices_vd: np.ndarray[Any, np.dtype[np.floating[Any]]],
     element_batches: list[ElementBatch],
@@ -995,6 +1012,7 @@ def solve_bvp(
     solver_options: SolverOptions = SolverOptions(),
     plot_convergence: bool = False,
     profile_memory: bool = False,
+    _resource_owner=None,
 ) -> tuple[jnp.ndarray, jnp.ndarray, list[ElementBatch]]:
     """
     Solve a boundary value problem for static linear elasticity.
@@ -1075,7 +1093,18 @@ def solve_bvp(
         constraints=constraint_system,
         solver_options=solver_options,
         f_ext=f_ext,
+        resource_owner=_resource_owner,
     )
+
+    if not isinstance(residual, jax.core.Tracer):
+        final_norm = float(jnp.linalg.norm(residual))
+        if not np.isfinite(final_norm):
+            raise FloatingPointError(
+                "solve_bvp stopped because the nonlinear residual norm is nonfinite "
+                "(including possible norm overflow). No more Newton corrections will "
+                "be attempted. Inspect the first failed linear solve and ILU factors; "
+                "this result must not be accepted as a converged benchmark."
+            )
 
     # Update internal state variables for the element batches
     # TODO need to update
@@ -1582,19 +1611,76 @@ def build_nonlinear_objects(
     constraints: ConstraintSystem,
     f_ext,
     *args,
+    differentiate_internal_state: bool = False,
+    explicit_boundary_data: bool = False,
     **kwargs,):
+    """Build reusable JAX residual/Jacobian/state-update functions.
+
+    By default phi contains only material parameters. With
+    differentiate_internal_state=True it contains [material, incoming_state].
+    explicit_boundary_data=True appends [constraints.g, f_ext.loads] for one
+    timestep, allowing the same function objects to serve an entire history.
+    All sections are flat arrays. Fixed geometry, sparsity and constrained/load
+    DOF indices remain in the closure; numerical offsets/loads do not.
+    """
+
+    # A history-dependent residual must expose its current constitutive state
+    # as an operand of the custom solve, not capture a tracer in its closure.
+    # Keep only static geometry/layout in that closure. Packing is opt-in to
+    # preserve the existing material-only parameter convention.
+    material_size = ebc.material_params.size
+    state_size = ebc.internal_state.size if differentiate_internal_state else 0
+    if differentiate_internal_state:
+        ebc = ebc.replace(material_params=None, internal_state=None)
+    elif explicit_boundary_data:
+        ebc = ebc.replace(material_params=None)
+    boundary_size = load_size = 0
+    if explicit_boundary_data:
+        if constraints.g.ndim != 1 or f_ext.loads.ndim != 1:
+            raise ValueError(
+                "explicit_boundary_data expects one-timestep vectors for "
+                "constraints.g and f_ext.loads, not history arrays. Select "
+                "a timestep when constructing the function template."
+            )
+        boundary_size, load_size = constraints.g.size, f_ext.loads.size
+        constraints = constraints.replace(g=None)
+        f_ext = f_ext.replace(loads=None)
+
+    def check_parameters(phi):
+        expected = material_size + state_size + boundary_size + load_size
+        if phi.ndim != 1 or phi.size != expected:
+            raise ValueError(
+                f"Expected a flat nonlinear parameter vector of length {expected}, "
+                f"received shape {phi.shape}. Concatenate material parameters, "
+                "incoming state (if enabled), and boundary offsets/loads "
+                "(if explicit_boundary_data is enabled)."
+            )
 
     def ebc_with_material_params(phi):
+        if differentiate_internal_state or explicit_boundary_data:
+            check_parameters(phi)
+        if differentiate_internal_state:
+            return ebc.replace(
+                material_params=phi[:material_size],
+                internal_state=phi[material_size:material_size + state_size],
+            )
+        if explicit_boundary_data:
+            return ebc.replace(material_params=phi[:material_size])
         return ebc.replace(material_params=jnp.asarray(phi))
 
     def residual_isv_func_w_constraints(phi, x):
+        active_constraints, active_force = constraints, f_ext
+        if explicit_boundary_data:
+            offset = material_size + state_size
+            active_constraints = constraints.replace(g=phi[offset:offset + boundary_size])
+            active_force = f_ext.replace(loads=phi[offset + boundary_size:])
         return calculate_residual_w_constraints(
             u_f=x,
             element_residual_func=element_residual_func,
             ebc=ebc_with_material_params(phi),
             assembly_map_b=assembly_map_b,
-            constraints=constraints,
-            f_ext=f_ext,
+            constraints=active_constraints,
+            f_ext=active_force,
         )
 
     residual_isv_func_w_constraints = jax.jit(residual_isv_func_w_constraints)

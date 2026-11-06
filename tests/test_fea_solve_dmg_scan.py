@@ -17,8 +17,8 @@ from fe_jax.linear_elasticity_dmg import *
 
 def test_fea_solve_dmg():
     args = {}
-    num_fib = '1'
-    args['t_total']  = 500
+    num_fib = '49'
+    args['t_total']  = 5
     args['dir_path'] = "debug"
     # args['dir_path'] = f"nonlinear_IGFEM_scan_t{args['t_total']}_{num_fib}fib_CG"
     args['strain_max'] = 0.012

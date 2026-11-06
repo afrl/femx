@@ -1,4 +1,8 @@
 from helper import *
+from fe_jax.linear_elasticity import (
+    elastic_isotropic as stateless_elastic_isotropic,
+    elastic_orthotropic as stateless_elastic_orthotropic,
+)
 import pytest
 import time
 
@@ -15,7 +19,7 @@ def test_microscale_bvp():
     # initialise_tracking()
 
     # Read in the mesh
-    mesh = meshio.read(get_mesh("microscale_2D_r0.vtk"))
+    mesh = meshio.read(get_mesh("microscale_2D_r1.vtk"))
     points = np.array(mesh.points, dtype=np.float32)[:, 0:2]
     cells = np.array(mesh.cells[0].data, dtype=np.uint64)
     mesh.cell_data["DomainIDs"][0] = np.array(
@@ -96,20 +100,45 @@ def test_microscale_bvp():
     matrix_mat_params_eqm, fiber_mat_params_eqm = get_properties()
     print(fiber_mat_params_eqm[0, 0, :])
 
+    @jax.tree_util.Partial
+    @jax.jit
+    def elastic_isotropic_vmap_adapter(
+        eps_qdd, material_params, internal_state_qi
+    ):
+        """Adapt stateless isotropic elasticity to the damage residual API."""
+        stress_qdd, _ = jax.vmap(stateless_elastic_isotropic)(
+            eps_qdd, material_params
+        )
+        return stress_qdd, internal_state_qi
+
+    @jax.tree_util.Partial
+    @jax.jit
+    def elastic_orthotropic_vmap_adapter(
+        eps_qdd, material_params, internal_state_qi
+    ):
+        """Adapt stateless orthotropic elasticity to the damage residual API."""
+        stress_qdd, _ = jax.vmap(stateless_elastic_orthotropic)(
+            eps_qdd, material_params
+        )
+        return stress_qdd, internal_state_qi
+
     def make_element_batches():
         return [
             ElementBatch(
                 fe_type=fe_type,
                 n_dofs_per_basis=2,
                 connectivity_en=matrix_cells,
-                constitutive_model=damage_elastic_isotropic_vmap,
+                # This benchmark supplies only (E, nu) and no damage state.
+                # The adapter matches linear_elasticity_dmg's batched keyword
+                # interface while leaving the empty state unchanged.
+                constitutive_model=elastic_isotropic_vmap_adapter,
                 material_params=matrix_mat_params_eqm,
             ),
             ElementBatch(
                 fe_type=fe_type,
                 n_dofs_per_basis=2,
                 connectivity_en=fiber_cells,
-                constitutive_model=elastic_orthotropic,
+                constitutive_model=elastic_orthotropic_vmap_adapter,
                 material_params=fiber_mat_params_eqm,
             ),
         ]
@@ -142,26 +171,77 @@ def test_microscale_bvp():
         )
         return result, first_call_time, times
 
-
-    def run_petsc():
-        return solve_bvp_PETSc(
+    def build_public_differentiable_bvp(element_batches):
+        """Build the FEA residual/Jacobian consumed by JetSCI's public API."""
+        (
+            ebc,
+            assembly_map_b,
+            constraint_system,
+            jacobian_nnz,
+            element_residual_func,
+            f_ext,
+        ) = preprocess_bvp(
             vertices_vd=points,
-            element_batches=make_element_batches(),
+            element_batches=element_batches,
             element_residual_func=linear_elasticity_residual,
             boundary_conditions=bcs,
             multipoint_constraints=None,
-            u_0_g=u_0,
-            diagnostics=False,
-            petsc_solver_options=jetsci.SolverOptions(
-                nonlinear_solver_type=jetsci.NonlinearSolverType.PETSC_SNES,
-                linear_precond_type=jetsci.PETScPreconditionerType.JACOBI,
-                linear_solve_type=jetsci.PETScLinearSolverType.CG,
-                nonlinear_absolute_tol=1e-14,
-                linear_max_iter=10000,
-                linear_relative_tol=1e-6,
-                linear_absolute_tol=1e-14,
-            ),
         )
+        residual_for_phi, jacobian_for_phi, residual_isv_for_phi = (
+            build_nonlinear_objects(
+                element_residual_func=element_residual_func,
+                ebc=ebc,
+                assembly_map_b=assembly_map_b,
+                jacobian_nnz=jacobian_nnz,
+                u_0_g=u_0,
+                constraints=constraint_system,
+                f_ext=f_ext,
+            )
+        )
+        return (
+            residual_for_phi,
+            jacobian_for_phi,
+            residual_isv_for_phi,
+            ebc.material_params,
+        )
+
+    def run_petsc():
+        element_batches = make_element_batches()
+        residual_for_phi, jacobian_for_phi, residual_isv_for_phi, phi = (
+            build_public_differentiable_bvp(element_batches)
+        )
+        petsc_options = jetsci.SolverOptions(
+            nonlinear_solver_type=jetsci.NonlinearSolverType.PETSC_SNES,
+            linear_preconditioner_type=jetsci.PreconditionerType.PETSC_JACOBI,
+            linear_solver_type=jetsci.LinearSolverType.PETSC_GMRES,
+            nonlinear_absolute_tol=1e-14,
+            linear_max_iter=10000,
+            linear_relative_tol=1e-6,
+            linear_absolute_tol=1e-14,
+        )
+        try:
+            u_petsc, petsc_options = jetsci.differentiable_solve(
+                petsc_options,
+                residual_for_phi,
+                jacobian_for_phi,
+                u_0,
+                phi,
+            )
+            residual_petsc, new_internal_state_eqi = residual_isv_for_phi(
+                phi, u_petsc
+            )
+            element_batches = [
+                batch.replace(internal_state=internal_state)
+                for batch, internal_state in zip(
+                    element_batches, new_internal_state_eqi, strict=True
+                )
+            ]
+            return u_petsc, residual_petsc, element_batches
+        finally:
+            if petsc_options.solver_key is not None:
+                jetsci.petsc_snes.solver_lifecycle.destroy_petsc_solver(
+                    petsc_options.solver_key
+                )
 
     def run_jax():
         return solve_bvp(
@@ -171,14 +251,16 @@ def test_microscale_bvp():
             u_0_g=u_0,
             boundary_conditions=bcs,
             solver_options=SolverOptions(
-                linear_solve_type=LinearSolverType.CG_JAX_SCIPY_W_INFO,
+                linear_solve_type=LinearSolverType.GMRES_JAX_SCIPY,
                 linear_precond_type=PreconditionerType.JACOBI,
             ),
         )
 
 
 
-    petsc_result, _, _ = time_solve("PETSc solve_bvp_PETSc", run_petsc, n_calls=3)
+    petsc_result, _, _ = time_solve(
+        "PETSc differentiable_solve", run_petsc, n_calls=3
+    )
     u_petsc, residual_petsc, _ = petsc_result
 
     jax_result, _, _ = time_solve("JAX solve_bvp", run_jax, n_calls=2)
@@ -191,28 +273,30 @@ def test_microscale_bvp():
     print("|u_petsc - u_jax| = ", jnp.linalg.norm(u_petsc - u))
 
     diff_options = jetsci.SolverOptions(
-                        nonlinear_solver_type=jetsci.NonlinearSolverType.PETSC_SNES,
-                        linear_precond_type=jetsci.PETScPreconditionerType.JACOBI,
-                        linear_solve_type=jetsci.PETScLinearSolverType.CG,
-                        nonlinear_relative_tol=1e-6,
-                        nonlinear_absolute_tol=1e-14,
-                        linear_max_iter=10000,
-                        linear_relative_tol=1e-6,
-                        linear_absolute_tol=1e-14,
-                    )
-    
-    solve_phi, phi_0, x_0, _, diff_options = build_differentiable_bvp_PETSc_solve(
-        vertices_vd=points,
-        element_batches=make_element_batches(),
-        element_residual_func=linear_elasticity_residual,
-        boundary_conditions=bcs,
-        multipoint_constraints=None,
-        u_0_g=u_0,
-        diagnostics=False,
-        petsc_solver_options=diff_options,
+        nonlinear_solver_type=jetsci.NonlinearSolverType.PETSC_SNES,
+        linear_preconditioner_type=jetsci.PreconditionerType.PETSC_JACOBI,
+        linear_solver_type=jetsci.LinearSolverType.PETSC_CG,
+        nonlinear_relative_tol=1e-6,
+        nonlinear_absolute_tol=1e-14,
+        linear_max_iter=10000,
+        linear_relative_tol=1e-6,
+        linear_absolute_tol=1e-14,
     )
+    residual_for_phi, jacobian_for_phi, _, phi_0 = build_public_differentiable_bvp(
+        make_element_batches()
+    )
+    x_0 = u_0
 
     try:
+        # Populate solver_key once. Subsequent primal, JVP, and VJP calls
+        # reuse this public differentiable_solve context.
+        _, diff_options = jetsci.differentiable_solve(
+            diff_options,
+            residual_for_phi,
+            jacobian_for_phi,
+            x_0,
+            phi_0,
+        )
         response_weights = jnp.linspace(
             0.5,
             1.5,
@@ -226,7 +310,13 @@ def test_microscale_bvp():
         phi_dot = 1e-3 * phi_0 * phi_direction
 
         def scalar_response(active_phi):
-            u_active = solve_phi(active_phi, x_0)
+            u_active, _ = jetsci.differentiable_solve(
+                diff_options,
+                residual_for_phi,
+                jacobian_for_phi,
+                x_0,
+                active_phi,
+            )
             return jnp.vdot(response_weights, u_active)
 
         def make_element_batches_from_phi(active_phi):
@@ -238,14 +328,14 @@ def test_microscale_bvp():
                     fe_type=fe_type,
                     n_dofs_per_basis=2,
                     connectivity_en=matrix_cells,
-                    constitutive_model=elastic_isotropic,
+                    constitutive_model=elastic_isotropic_vmap_adapter,
                     material_params=matrix_phi,
                 ),
                 ElementBatch(
                     fe_type=fe_type,
                     n_dofs_per_basis=2,
                     connectivity_en=fiber_cells,
-                    constitutive_model=elastic_orthotropic,
+                    constitutive_model=elastic_orthotropic_vmap_adapter,
                     material_params=fiber_phi,
                 ),
             ]
@@ -293,7 +383,7 @@ def test_microscale_bvp():
         )
         jax_response.block_until_ready()
         jax_response_dot.block_until_ready()
-        JaxDiffTime = time.time() - PETScStartTime
+        JaxDiffTime = time.time() - JaxStartTime
 
         derivative_abs_error = jnp.abs(response_dot - finite_difference_dot)
         derivative_rel_error = derivative_abs_error / (
@@ -330,7 +420,6 @@ def test_microscale_bvp():
     finally:
         solver_key = diff_options.solver_key
         if solver_key is not None:
-            jetsci.petsc_snes.differentiable_snes.unregister_primitive_context(solver_key)
             jetsci.petsc_snes.solver_lifecycle.destroy_petsc_solver(solver_key)
 
     # Make sure the solution matches at the Dirichlet BCs

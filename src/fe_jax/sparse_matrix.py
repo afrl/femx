@@ -1,6 +1,7 @@
 import jax
 import jax.numpy as jnp
 import jax.experimental.sparse as jsparse
+import numpy as np
 
 from functools import partial
 
@@ -111,20 +112,18 @@ def coo_sum_duplicates(A: jsparse.COO, result_length: int) -> jsparse.COO:
 
 
 @jax.jit
-def coo_to_csr(A: jsparse.COO):
+def coo_to_csr(A: jsparse.COO) -> jsparse.CSR:
+    """Explicit JIT-compatible COO -> CSR with int32 GPU indices.
+
+    Requires valid in-range COO coordinates (no padded sentinel indices).
+    Sorts coordinates on device if needed, retaining all entries/explicit zeros.
+    Does not materialize a dense matrix, merge duplicates, or freeze values.
+    Direct sparse solvers require duplicates to be merged before conversion.
     """
-    Convert a COO sparse matrix to a CSR sparse matrix.
-
-    Args:
-        sum_duplicates: indicates whether to sum duplicate indices.
-
-    Returns:
-        (data, row, col) defining a COO matrix with duplicates summed.
-
-    IMPORTANT NOTE:
-        If the resulting CSR will be used with spsolve, make sure to set sum_duplicates to True
-        because the CUDA sparse solver will not yield the correct result.
-    """
+    if not isinstance(A, jsparse.COO):
+        raise TypeError(f"coo_to_csr expects a JAX COO matrix, received {type(A).__name__}; supply assembled sparse coordinates, not a dense array or callable.")
+    if len(A.shape) != 2 or max(*A.shape, A.nse) > np.iinfo(np.int32).max:
+        raise ValueError(f"CSR conversion requires a 2D matrix with int32-sized dimensions/storage, received shape={A.shape}, nse={A.nse}; use a compatible sparse representation.")
     if not A._rows_sorted:
         # Get the permutation that sorts the matrix entries
         perm = jnp.lexsort((A.col, A.row))
@@ -142,15 +141,15 @@ def coo_to_csr(A: jsparse.COO):
     # The 'length' argument is crucial to ensure the output array has size num_rows,
     # even if the last rows are empty.
     num_rows, _ = A.shape
-    nnz_per_row = jnp.bincount(rows, length=num_rows)
+    nnz_per_row = jnp.bincount(rows, length=num_rows).astype(jnp.int32)
 
     # Build the index pointer array (indptr) from the counts.
     # This is a cumulative sum of the non-zero counts per row.
     # The first element of indptr is always 0.
-    indptr = jnp.concatenate([jnp.array([0]), jnp.cumsum(nnz_per_row)])
-    jax.debug.print("indptr: {}", indptr)
+    indptr = jnp.concatenate([jnp.zeros(1, dtype=jnp.int32),
+                              jnp.cumsum(nnz_per_row, dtype=jnp.int32)])
 
-    return jsparse.CSR((data, cols, indptr), shape=A.shape)
+    return jsparse.CSR((data, cols.astype(jnp.int32), indptr), shape=A.shape)
 
 
 
