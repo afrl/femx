@@ -3,6 +3,7 @@ import numpy as np
 
 import fea_traditional as test
 from helper import *
+from igfem_mesh import *
 
 import os
 import pyvista as pv
@@ -11,7 +12,6 @@ import jax
 import jax.numpy as jnp
 import optax
 jax.config.update("jax_enable_x64", True)   #   True or comment out both works. False cause incorrect result
-from fe_jax.post_pred import *
 from fe_jax.write_vtk import *
 from fe_jax.linear_elasticity_dmg import *
 from fe_jax.fea import convert_boundary_conditions, solve_bvp_quasi, SolverOptions, LinearSolverType
@@ -49,37 +49,8 @@ def test_ad():
     print("# DoFs = ", 2 * points.shape[0])
 
     num_cells = len(mesh.celltypes)
-    matrix_tri_cells, matrix_quad_cells = [],[]
-    matrix_tri_id, matrix_quad_id = [],[]
-    fiber_tri_cells, fiber_quad_cells = [],[]
-    fiber_tri_id, fiber_quad_id = [],[]
-
-    matrix_ID = jnp.max(mesh.cell_data['materials'])
-    for id, celltype in enumerate(mesh.celltypes):
-        materials_ID = mesh.cell_data['materials'][id]    # Fiber=0, matrix= largest in the 'material'
-        cell_nodes = mesh.get_cell(id).point_ids
-        cell_nodes = reorder_cell_basix(mesh, cell_nodes)
-        # Triangle
-        if celltype == 5:
-            if materials_ID == matrix_ID:
-                matrix_tri_cells.append(cell_nodes)
-                matrix_tri_id.append(id)
-            else:
-                fiber_tri_cells.append(cell_nodes)
-                fiber_tri_id.append(id)
-        # Quad
-        elif celltype == 9:
-            if materials_ID == matrix_ID:
-                matrix_quad_cells.append(cell_nodes)
-                matrix_quad_id.append(id)
-            else:
-                fiber_quad_cells.append(cell_nodes)
-                fiber_quad_id.append(id)
-
-    matrix_tri_cells,  matrix_quad_cells = np.array(matrix_tri_cells), np.array(matrix_quad_cells)
-    matrix_tri_id,     matrix_quad_id    = np.array(matrix_tri_id),    np.array(matrix_quad_id)
-    fiber_tri_cells,   fiber_quad_cells  = np.array(fiber_tri_cells),  np.array(fiber_quad_cells)
-    fiber_tri_id,      fiber_quad_id     = np.array(fiber_tri_id),     np.array(fiber_quad_id)
+    (matrix_tri_cells, matrix_quad_cells, matrix_tri_id, matrix_quad_id,
+     fiber_tri_cells,  fiber_quad_cells,  fiber_tri_id,  fiber_quad_id) = split_matrix_fiber_cells(mesh)
 
     length = (np.max(mesh.points[:,0]) - np.min(mesh.points[:,0]))
     U = 2
@@ -317,14 +288,13 @@ def test_ad():
 
             flat_internal_state = jnp.hstack([isv.ravel() for isv in new_internal_state_beqi])
             ebc_next = ebc_curr.replace(internal_state=flat_internal_state)
-            ISV_be = compute_ISV_be(new_internal_state_beqi)
+            ISV_be = calculate_element_averaged_state(new_internal_state_beqi)
 
             return (u, ebc_next), (u, ISV_be)
 
         init_carry = (u_prev, ebc_updated)
         final_carry, (u_history, ISV_be_history) = jax.lax.scan(step_fn, init_carry, (all_g, all_loads))
-        # s11_global = compute_stress_strain_curve(ISV_be_history, element_batches, points)
-        s11_global, s22_global, s12_global = compute_stress_strain_curve(ISV_be_history, element_batches, points)
+        s11_global, s22_global, s12_global = calculate_global_stress(ISV_be_history, element_batches, points)
 
         obj = -jnp.max(s11_global)
         # loss = jnp.mean((s_match - jnp.stack([s11_global, s22_global, s12_global], axis=1)) ** 2)

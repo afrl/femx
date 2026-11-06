@@ -16,6 +16,7 @@ from .profiling import *
 from .setup import *
 from .sparse_matrix import *
 from .utils import *
+from .post_process import *
 from .constraint_system import *
 from .constraints import *
 from .bvp_solver import *

@@ -29,6 +29,7 @@ PIGFEM*
 *adios*
 *.ipynb
 jetsci_git
+.env
 adjustedOrderingTestOutput
 jvp_emoryOutput
 memoryOutput
