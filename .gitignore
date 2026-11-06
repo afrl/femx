@@ -20,3 +20,12 @@ prof/
 *.egg-info/
 tests/output/
 tests/__pycache__/
+adjustedOrderingTestOutput
+cg_reductions.out
+damage_runtime.out
+jvp_emoryOutput
+memoryOutput
+microscale_bvp_csr.out
+test_16f_500t_JAX.out
+test_16f_500t_JetSci.out
+testoutput
