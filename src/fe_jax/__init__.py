@@ -10,6 +10,7 @@ from .basis_quadrature import *
 from .fea import *
 from .linear_elasticity import *
 from .hyperelasticity import *
+from .heat_conduction import *
 from .profiling import *
 from .setup import *
 from .sparse_matrix import *

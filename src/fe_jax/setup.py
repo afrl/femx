@@ -227,7 +227,7 @@ class AssemblyMap:
     """
 
     indices: jnp.ndarray
-    shape: tuple[int] = struct.field(pytree_node=False)  
+    shape: tuple[int|np.integer,int|np.integer] = struct.field(pytree_node=False)  
 
 @partial(jax.jit,static_argnames = "n_vertices")
 def mesh_to_sparse_assembly_map(
@@ -308,7 +308,7 @@ def transform_element_node_to_global_sum(
     """
     U = v_en.shape[2]
     V, EN = assembly_map.shape
-    v_g = jnp.empty((V, U)).at[assembly_map.indices, ...].add(v_en, mode="drop")
+    v_g = jnp.zeros((V, U)).at[assembly_map.indices, ...].add(v_en, mode="drop")
     return v_g
 
 

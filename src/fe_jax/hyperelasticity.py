@@ -3,60 +3,27 @@ import jax.numpy as jnp
 from functools import partial
 from typing import Callable
 
-from .utils import rank2_tensor_to_voigt, rank2_voigt_to_tensor
-
+from .utils import is_required
+from .linear_elasticity import elastic_isotropic
 
 @jax.tree_util.Partial
 @jax.jit
-def st_venant_kirchhoff(F_qdd: jnp.ndarray, material_params_qm: jnp.ndarray):
+def st_venant_kirchhoff(F_dd: jnp.ndarray, material_params_m: jnp.ndarray):
     """
     A constitutive relation for an isotropic St. Venant-Kirchhoff hyperelastic solid. Identical to linear elasticity, except using nonlinear strain.
     First argument is deformation gradient, rather than strain, since other hyperelastic models are not naturally in terms of even nonlinear strain.
     """
-    E = material_params_qm[..., 0]
-    nu = material_params_qm[..., 1]
-    G = 0.5 * E / (1.0 + nu)
-    zero = jnp.zeros_like(nu)
-    if F_qdd.shape[2] == 1:  # 1D
-        C_qss = E.transpose((1, 0))[:, jnp.newaxis]
-    elif F_qdd.shape[2] == 2:  # 2D
-        C_qss = jnp.linalg.inv(
-            jnp.array(
-                [
-                    [1.0 / E, -nu / E, zero],
-                    [-nu / E, 1.0 / E, zero],
-                    [zero, zero, 1.0 / G],
-                ]
-            ).transpose((2, 0, 1))
-        )
-    elif F_qdd.shape[2] == 3:  # 3D
-        C_qss = jnp.linalg.inv(
-            jnp.array(
-                [
-                    [1.0 / E, -nu / E, -nu / E, zero, zero, zero],
-                    [-nu / E, 1.0 / E, -nu / E, zero, zero, zero],
-                    [-nu / E, -nu / E, 1.0 / E, zero, zero, zero],
-                    [zero, zero, zero, 1.0 / G, zero, zero],
-                    [zero, zero, zero, zero, 1.0 / G, zero],
-                    [zero, zero, zero, zero, zero, 1.0 / G],
-                ]
-            ).transpose((2, 0, 1))
-        )
-    else:
-        raise RuntimeError("Strain must be 1D, 2D or 3D to compute stress.")
-    eps_qdd = 0.5 * (
-        jnp.einsum("qdi,qdj -> qij", F_qdd, F_qdd)
-        - jnp.eye(F_qdd.shape[2])[jnp.newaxis, :, :]
+    eps_dd = 0.5 * (
+        jnp.einsum("di,dj -> ij", F_dd, F_dd)
+        - jnp.eye(F_dd.shape[1])
     )
-    stress_qdd = rank2_voigt_to_tensor(
-        jnp.einsum("qsi,qi->qs", C_qss, rank2_tensor_to_voigt(eps_qdd))
-    )
-    return stress_qdd
+    stress_dd = elastic_isotropic(eps_dd,material_params_m)[0]
+    return stress_dd
 
 
 @jax.tree_util.Partial
 @jax.jit
-def mooney_rivlin(F_qdd: jnp.ndarray, material_params_qm: jnp.ndarray):
+def mooney_rivlin(F_dd: jnp.ndarray, material_params_m: jnp.ndarray):
     """
     A constitutive model for Mooney-Rivlin hyperelasticity, assumes plane strain/linear strain for the lower dimensional cases,
     essentially assuming a block form of the deformation gradient with the relevant dimensions as provided by the argument F_qdd in the upper left,
@@ -65,28 +32,27 @@ def mooney_rivlin(F_qdd: jnp.ndarray, material_params_qm: jnp.ndarray):
     Since we only want the upper left block of the stress as well, we can essentially work only on that block,
     which means that the computation is independent of dimension. This may not be valid, perhaps confirm how 2D hyperelasticity is "usually" done
     """
-    C1_q = material_params_qm[..., 0]
-    C2_q = material_params_qm[..., 1]
-    D1_q = material_params_qm[..., 2]
+    C1_q = material_params_m[0]
+    C2_q = material_params_m[1]
+    D1_q = material_params_m[2]
 
-    if F_qdd.shape[2] <= 3:
-        J_q = jnp.linalg.det(F_qdd)
-        Jm13_q = J_q ** (-1 / 3)
-        Fbar_qdd = jnp.einsum("q,qdj -> qdj", Jm13_q, F_qdd)
-        Bbar_qdd = jnp.einsum("qdj,qdk -> qjk", Fbar_qdd, Fbar_qdd)
-        I1bar_q = jnp.einsum("qdd->q", Bbar_qdd)
-        I2bar_q = 0.5 * (I1bar_q**2 - jnp.einsum("qij,qji -> q", Bbar_qdd, Bbar_qdd))
-        BbarFbar_qdd = jnp.einsum("qjd,qdk -> qjk", Bbar_qdd, Fbar_qdd)
-        Fbarinv_qdd = jnp.linalg.inv(Fbar_qdd).transpose((0, 2, 1))
-        FinvTcoefficients_q = 2 / D1_q * Jm13_q ** (-2) * (J_q - 1) - 2 / 3 * Jm13_q * (
-            C1_q * I1bar_q + 2 * C2_q * I2bar_q
+    if F_dd.shape[1] <= 3:
+        J = jnp.linalg.det(F_dd)
+        Jm13 = J ** (-1 / 3)
+        Fbar_dd =Jm13*F_dd
+        Bbar_dd = jnp.einsum("dj,dk -> jk", Fbar_dd, Fbar_dd)
+        I1bar = Bbar_dd.trace()
+        I2bar = 0.5 * (I1bar**2 - jnp.einsum("ij,ji ->", Bbar_dd, Bbar_dd))
+        BbarFbar_dd = jnp.einsum("jd,dk -> jk", Bbar_dd, Fbar_dd)
+        Fbarinv_dd = jnp.linalg.inv(Fbar_dd).transpose()
+        FinvTcoefficients = 2 / D1_q * Jm13 ** (-2) * (J - 1) - 2 / 3 * Jm13 * (
+            C1_q * I1bar + 2 * C2_q * I2bar
         )
-        Fcoefficients_q = 2 * Jm13_q * (C1_q + I1bar_q * C2_q)
-        BFcoefficients_q = 2 * Jm13_q * C2_q
-        stress_qdd = (
-            jnp.einsum("q,qdj -> qjd", FinvTcoefficients_q, Fbarinv_qdd)
-            + jnp.einsum("q,qdj->qdj", Fcoefficients_q, Fbar_qdd)
-            + jnp.einsum("q,qdj->qdj", BFcoefficients_q, BbarFbar_qdd)
+        Fcoefficients = 2 * Jm13 * (C1_q + I1bar * C2_q)
+        BFcoefficients = 2 * Jm13 * C2_q
+        stress_qdd = (FinvTcoefficients*Fbarinv_dd
+            + Fcoefficients*Fbar_dd
+            + BFcoefficients*BbarFbar_dd
         )
     else:
         raise RuntimeError("Deformation Gradient must be at most 3D")
@@ -135,8 +101,24 @@ def hyperelasticity_residual(
     det_J_q = jnp.linalg.det(J_qpd)
     dphi_dx_qnd = jnp.einsum("qpd,qnp->qnd", G_qpd, dphi_dxi_qnp)
     F_qdd = jnp.einsum("qnd,ni->qid", dphi_dx_qnd, u_nd + x_nd)
-    stress_qdd = constitutive_model(F_qdd=F_qdd, material_params_qm=material_params_qm)
+    constitutive_args = []
+    in_axes = []
 
+    if is_required(constitutive_model, "F_dd"):
+        constitutive_args.append(F_qdd)
+        in_axes.append(0)
+
+    if is_required(constitutive_model, "material_params_m"):
+        constitutive_args.append(material_params_qm)
+        if material_params_qm.ndim == 1:
+            in_axes.append(None)
+        else:
+            in_axes.append(0)
+
+    if is_required(constitutive_model, "internal_state_i"):
+        constitutive_args.append(internal_state_qi)
+        in_axes.append(0)
+    stress_qdd = jax.vmap(constitutive_model,in_axes=tuple(in_axes))(*constitutive_args)
     grad_dphi_dx_stress_qnd = jnp.einsum("qni,qid->qnd", dphi_dx_qnd, stress_qdd)
     det_JxW_q = jnp.einsum("q,q->q", det_J_q, W_q)
     R_nd = jnp.einsum("qnd,q->nd", grad_dphi_dx_stress_qnd, det_JxW_q)
