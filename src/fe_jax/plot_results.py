@@ -11,6 +11,9 @@ plot_dmg_sensitivity() plots a single-material-point damage run (tests/test_dmg_
 tests/test_fd_sensitivity.py) against applied strain, on 3x4 grids with the legend in the last panel:
   - <prefix>_param_grads.png : p * ds11/dp of the 11 matrix parameters
   - <prefix>_isvs.png        : the 11 ISVs
+
+plot_optimization() plots a parameter optimization (tests/test_fea_solve_dmg_scan_ad*.py): the history
+of each parameter with its bounds, above the final s11 curve against a reference curve.
 """
 import multiprocessing
 import os
@@ -323,4 +326,52 @@ def plot_grad_table(param_names, theta_m, grad_m, symbol, title, save_path):
         table[0, j].set_facecolor('#E6E6E6')
     a.set_title(title, fontsize=16)
     fig.savefig(save_path, bbox_inches='tight', dpi=DPI)
+    print(f'Saved {save_path}')
+
+
+# Parameters optimized by tests/test_fea_solve_dmg_scan_ad*.py, in the order of their param_hist columns
+OPT_PARAM_LABELS = [r"Epoxy Young's Modulus" + "\n" + r"$E$ (MPa)",
+                    r"Fiber Young's Modulus" + "\n" + r"$E_{xx}$ (MPa)"]
+
+
+def plot_optimization(param_hist, strain, s11, lower_bounds, upper_bounds, save_path, ref=None,
+                      param_labels=OPT_PARAM_LABELS, n_ref_markers=50):
+    """Optimization history of each parameter, with its bounds, above the final global s11 curve.
+
+    param_hist   : parameters at each optimization step, shape (n_steps, n_params)
+    strain       : applied strain (%) after each load step, shape (N_t,)
+    s11          : global s11 after each load step at the optimized parameters, shape (N_t,)
+    lower_bounds, upper_bounds : bounds of each parameter, shape (n_params,), drawn as dotted lines
+    ref          : optional reference curve, array of shape (2, N_ref) holding (strain (%), s11),
+                   e.g. the stress_strain_curve.npy saved by tests/test_fea_solve_dmg_scan.py
+    param_labels : y-axis label of each parameter panel
+    n_ref_markers: about how many reference points to mark, so a long curve stays readable
+    """
+    param_hist = np.asarray(param_hist).reshape(len(param_hist), -1)
+    n_params = param_hist.shape[1]
+    # Arial if installed, else the metrically identical Liberation Sans, without a missing-font warning
+    with matplotlib.rc_context({'font.family': 'sans-serif', 'font.size': 24,
+                                'font.sans-serif': ['Arial', 'Liberation Sans', 'DejaVu Sans']}):
+        fig = Figure(figsize=(8, 14 * (n_params + 1) / 3))   # (8, 14) for the two moduli
+        ax = fig.subplots(n_params + 1, 1)
+
+        for j, (a, label, lower, upper) in enumerate(zip(ax[:-1], param_labels, lower_bounds, upper_bounds)):
+            a.plot(param_hist[:, j], 'C0', lw=2.5)
+            a.axhline(float(lower), color='0.7', ls=':', lw=2, label='Lower bound')
+            a.axhline(float(upper), color='0.7', ls=':', lw=2, label='Upper bound')
+            a.set(xlabel='Optimization Step', ylabel=label)
+
+        if ref is not None:
+            ref_strain, ref_s11 = np.asarray(ref)
+            ax[-1].plot(ref_strain, ref_s11, 'ko', ms=6, markevery=max(1, len(ref_strain) // n_ref_markers),
+                        label='Reference')
+        ax[-1].plot(np.asarray(strain), np.asarray(s11), 'C0', lw=2.5, label='Optimized solver')
+        ax[-1].set(xlabel='Strain (%)', ylabel='Stress (MPa)')
+        ax[-1].legend(fontsize=14)
+
+        for a in ax:
+            a.grid(alpha=.3)
+
+        fig.tight_layout()
+        fig.savefig(save_path, dpi=DPI, bbox_inches='tight', pad_inches=0.5)
     print(f'Saved {save_path}')

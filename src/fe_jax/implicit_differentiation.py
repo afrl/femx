@@ -8,7 +8,6 @@ from .fea import (
     solve_nonlinear_quasi_step,
     calculate_jacobian_wo_constraints,
     calculate_residual_w_constraints,
-    compute_ISV_be
 )
 from .sparse_matrix import apply_dirichlet_bcs_lhs
 
