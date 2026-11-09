@@ -29,3 +29,5 @@ microscale_bvp_csr.out
 test_16f_500t_JAX.out
 test_16f_500t_JetSci.out
 testoutput
+tunable_nl_solution.vtu
+tunable_nl_solution_JetSCI.vtu
