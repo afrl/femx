@@ -156,6 +156,7 @@ def run_threeFiberTow(
     linear_solve_type: LinearSolverType = LinearSolverType.SPSOLVE_PYPARDISO,
     damp_Newton_diag: float = 0.,
     solver_options: SolverOptions | None = None,
+    strain_measure: StrainMeasure = StrainMeasure.GREEN_LAGRANGE,
 ):
     """ """
     fabric, bcs = make_bundle(

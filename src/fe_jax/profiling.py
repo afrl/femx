@@ -667,6 +667,42 @@ class SegmentProfiler:
     def print_summary(self):
         print(self.summary_table())
 
+    @classmethod
+    def print_json_summary(cls, filepath: Union[str, Path]) -> str:
+        """
+        Reads a saved profile JSON file and prints its formatted summary table.
+        """
+        filepath = Path(filepath)
+        with open(filepath, "r") as f:
+            data = json.load(f)
+
+        name = data.get("name", filepath.stem)
+        total_time = data.get("total_duration", 0.0)
+        summary = data.get("summary", {})
+
+        width = 96
+        lines = []
+        lines.append("=" * width)
+        lines.append(f" {name} (Total Elapsed: {total_time:.4f}s)".center(width))
+        lines.append("=" * width)
+        lines.append(
+            f"{'Segment':<20} | {'Calls':<6} | {'Total (s)':<10} | {'Cold (s)':<10} | {'Warm Avg (s)':<12} | {'% Total':<8} | {'JIT (s)':<8}"
+        )
+        lines.append("-" * width)
+
+        for seg_name, s in summary.items():
+            warm_avg_str = f"{s['warm_avg']:.4f}" if s.get("warm_avg") is not None else "-"
+            cold_time = s.get("cold_time", 0.0) or 0.0
+            jit_time = s.get("jit_time", 0.0) or 0.0
+            percent = s.get("percent", 0.0) or 0.0
+            lines.append(
+                f"{seg_name:<20} | {s.get('count', 0):<6d} | {s.get('total_time', 0.0):<10.4f} | {cold_time:<10.4f} | {warm_avg_str:<12} | {percent:<7.1f}% | {jit_time:<8.4f}"
+            )
+        lines.append("=" * width)
+        output = "\n".join(lines)
+        print(output)
+        return output
+
     def to_dict(self) -> Dict[str, Any]:
         return {
             "name": self.name,
@@ -755,4 +791,14 @@ def profile_segment(
             yield
     else:
         yield
+
+
+if __name__ == "__main__":
+    import sys
+    if len(sys.argv) < 2:
+        print("Usage: python -m fe_jax.profiling <path_to_profile.json>")
+        sys.exit(1)
+    for path in sys.argv[1:]:
+        SegmentProfiler.print_json_summary(path)
+        print()
 
