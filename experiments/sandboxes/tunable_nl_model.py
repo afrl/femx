@@ -1,15 +1,13 @@
-import jax
-import jax.numpy as jnp
-import meshio
-
-
 import sys, os
 sys.path.append(os.path.dirname(os.path.realpath(__file__)) + "/../../src")
 
 from fe_jax import *
 
+import jax
+import jax.numpy as jnp
+import meshio
 
-outputVTU = False
+outputVTU = True
 
 def custom_nl_scalar_diffusion(nl_kernel):
     """
@@ -32,7 +30,7 @@ if __name__=="__main__":
     U = 1 # Solution dimensionality (always 1)
     n=400 # Mesh size (nxn square grid)
     constitutive_model=custom_nl_scalar_diffusion(
-        lambda x: 1 #1+60*x**2+5*x**4+1.4*x**6
+        lambda x: jnp.ones_like(x) #+60*x**2+5*x**4+1.4*x**6
     ) # Should be even, positive
     PARAM_RANGE_FACTOR = 3 # number of orders of magnitude parameters span (upper bound 1e11)
     BC_SCALE = 1 # upper bound for dirichlet BC values
@@ -105,7 +103,7 @@ if __name__=="__main__":
     ]
     
     u_0_g = jnp.full(shape=(points.shape[0]*element_batches[0].n_dofs_per_basis),fill_value=0.0) 
-    u, residual, element_batch = solve_bvp(
+    u, residual, element_batches = solve_bvp(
         element_residual_func=heat_conduction_residual,
         vertices_vd=points,
         element_batches=element_batches,
@@ -127,11 +125,45 @@ if __name__=="__main__":
     print("Solution finite:", bool(jnp.isfinite(u).all()))
 
     if outputVTU == True:
-        meshio.write_points_cells(
-            "tunable_nl_solution_JetSCI.vtu",
-            points=np.column_stack((vertices_vd, np.zeros(len(vertices_vd)))),
-            cells=[("quad", cells[:, [0, 1, 3, 2]])],
-            point_data={"T": np.asarray(u).reshape(-1)},
-        )
+        # Write output
+        mesh.point_data["u"] = np.array(u)
+        mesh.write("test_tunable_nl_model_linear.vtk")
     
     print("Solution range:", float(jnp.min(u)), float(jnp.max(u)))
+
+    ####################################################################################
+    ## Nonlinear
+
+    constitutive_model=custom_nl_scalar_diffusion(
+        lambda x: 1 + 1e-3*x**2
+    ) # Should be even, positive
+    
+    for i in range(len(element_batches)):
+        element_batches[i] = element_batches[i].replace(
+            constitutive_model = constitutive_model
+        )
+
+    print('solving nonlinear')
+    u, residual, element_batches = solve_bvp(
+        element_residual_func=heat_conduction_residual,
+        vertices_vd=points,
+        element_batches=element_batches,
+        u_0_g=u,
+        boundary_conditions=bcs,
+        plot_convergence=False,
+        solver_options=SolverOptions(
+            linear_solve_type=LinearSolverType.CG_JAX_SCIPY_CSR,
+            nonlinear_max_iter=200,
+            linear_relative_tol=1e-12,
+            nonlinear_absolute_tol=1e-12,
+            linear_max_iter=5000,
+            linear_precond_type=PreconditionerType.JACOBI,
+            gmres_solve_method="incremental",
+            linear_diagnostics=True,
+        ),
+    )
+
+    if outputVTU == True:
+        # Write output
+        mesh.point_data["u"] = np.array(u)
+        mesh.write("test_tunable_nl_model_nonlinear.vtk")
