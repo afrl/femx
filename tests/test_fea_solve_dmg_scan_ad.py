@@ -3,7 +3,7 @@ import numpy as np
 
 import fea_traditional as test
 from helper import *
-from igfem_mesh import *
+from fe_jax.igfem_mesh import *
 
 import os
 import pyvista as pv
@@ -14,14 +14,15 @@ import optax
 jax.config.update("jax_enable_x64", True)   #   True or comment out both works. False cause incorrect result
 from fe_jax.write_vtk import *
 from fe_jax.linear_elasticity_dmg import *
+from fe_jax.plot_results import plot_optimization
 from fe_jax.fea import convert_boundary_conditions, solve_bvp_quasi, SolverOptions, LinearSolverType
 
 def test_ad():
     args = {}
     num_fib = '1'
     args['t_total']  = 500
-    args['dir_path'] = "debug_opt"
-    # args['dir_path'] = f"nonlinear_IGFEM_scan_t{args['t_total']}_{num_fib}fib_AD"
+    # args['dir_path'] = "debug_opt"
+    args['dir_path'] = f"IGFEM_strength_{args['t_total']}_{num_fib}fib_AD"
     args['strain_max'] = 0.012
     dt = 10/args['t_total']
 
@@ -29,7 +30,8 @@ def test_ad():
     # params = jnp.array([3900.0, 233.e3])    #opt
     # params = jnp.array([2000.0, 200.e3])    #1 
     # params = jnp.array([2000.0, 250.e3])    #2
-    params = jnp.array([3000.0, 200.e3])    #3
+    # params = jnp.array([3000.0, 200.e3])    #3
+    params = jnp.array([3500.0, 245.e3])    #6: middle of the bounds [2500, 4500] and [230e3, 260e3]
     # params = jnp.array([4000.0, 250.e3])    #4
     # params = jnp.array([4250.0, 250.e3])    #5
     print("Initial parameters:", params)
@@ -296,8 +298,9 @@ def test_ad():
         final_carry, (u_history, ISV_be_history) = jax.lax.scan(step_fn, init_carry, (all_g, all_loads))
         s11_global, s22_global, s12_global = calculate_global_stress(ISV_be_history, element_batches, points)
 
-        obj = -jnp.max(s11_global)
-        # loss = jnp.mean((s_match - jnp.stack([s11_global, s22_global, s12_global], axis=1)) ** 2)
+        # obj = -jnp.max(s11_global)
+        obj = -calculate_strength(s11_global)    # strength: the first peak of the s11 curve
+        # obj = jnp.mean((s_match - jnp.stack([s11_global, s22_global, s12_global], axis=1)) ** 2)
 
         return obj, (ISV_be_history, s11_global, u_history)
 
@@ -317,7 +320,10 @@ def test_ad():
     print("\n--- Starting optimization loop ---")
     
     lr = jnp.array([1e4, 1e7])
-    
+    # Project parameters into physically realistic bounds [Epoxy E, Fiber E_xx]
+    lower_bounds = jnp.array([2500.0, 230000.0])
+    upper_bounds = jnp.array([4500.0, 260000.0])
+
     def opt_step(carry, i):
         curr_phys_params = carry
         # curr_phys_params = curr_phys_params.at[0].set( 233.e3 + 3900. - curr_phys_params[1])
@@ -327,10 +333,6 @@ def test_ad():
                         i=i+1, loss=loss, params=curr_phys_params, sum=jnp.sum(curr_phys_params))
                         
         next_phys_params = curr_phys_params - lr * phys_grad
-        
-        # Project parameters into physically realistic bounds [Epoxy E, Fiber E_xx]
-        lower_bounds = jnp.array([2500.0, 230000.0])
-        upper_bounds = jnp.array([4500.0, 26000.0])
         next_phys_params = jnp.clip(next_phys_params, min=lower_bounds, max=upper_bounds)
         
         return next_phys_params, (curr_phys_params, loss)
@@ -340,7 +342,7 @@ def test_ad():
         final_carry, (param_hist, loss_hist) = jax.lax.scan(
             opt_step, 
             init_phys_params, 
-            jnp.arange(50)
+            jnp.arange(20)
         )
         return final_carry, param_hist, loss_hist
 
@@ -357,6 +359,12 @@ def test_ad():
     # np.save(os.path.join(args['out_dir'], "final_ISV_history.npy"), final_ISV_history)
     np.save(os.path.join(args['out_dir'], "final_s11_global.npy"), final_s11)
     # np.save(os.path.join(args['out_dir'], "final_u_history.npy"), final_u_history)
+
+    # Reference: the s11 curve at the nominal parameters, saved by tests/test_fea_solve_dmg_scan.py
+    ref_path = f"tests/output/scan/scan_t{args['t_total']}_{num_fib}fib/stress_strain_curve.npy"
+    ref = np.load(ref_path) if os.path.exists(ref_path) else None
+    plot_optimization(param_hist, dxs / length * 100, final_s11, lower_bounds, upper_bounds,
+                      os.path.join(args['out_dir'], "optimized_results.png"), ref=ref)
 
     return n_total_dofs, args['out_dir']
 

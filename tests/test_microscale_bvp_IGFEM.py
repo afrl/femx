@@ -1,5 +1,5 @@
 from helper import *
-from igfem_mesh import *
+from fe_jax.igfem_mesh import *
 import pytest
 import time
 import jetsci

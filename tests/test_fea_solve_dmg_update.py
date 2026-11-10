@@ -3,7 +3,7 @@ import numpy as np
 
 import fea_traditional as test
 from helper import *
-from igfem_mesh import *
+from fe_jax.igfem_mesh import *
 
 import os
 import pyvista as pv

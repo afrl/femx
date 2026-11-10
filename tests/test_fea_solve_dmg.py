@@ -3,13 +3,13 @@ import numpy as np
 
 # import fea_traditional as test
 from helper import *
-from igfem_mesh import *
+from fe_jax.igfem_mesh import *
 
 import os
+import sys
 import pyvista as pv
 import time
 # jax.config.update("jax_enable_x64", True)   #   True or comment out both works. False cause incorrect result
-from fe_jax.post_pred import *
 from fe_jax.write_vtk import *
 from fe_jax.plot_results import plot_comparison
 # jax.config.update("jax_disable_jit", True)
@@ -18,11 +18,11 @@ from fe_jax.plot_results import plot_comparison
 
 def test_fea_solve_dmg():
     args = {}
-    num_fib = 100    # 1, 2, 4, 9, 16, 23, 33, 36, 46, 49, 60, 64, 100
-    args['t_total']  = 500
+    num_fib = 1    # 1, 2, 4, 9, 16, 23, 33, 36, 46, 49, 60, 64, 100
+    args['t_total']  = 500    # number of load steps; 500 matches IGFEM_ref
     # args['dir_path'] = "debug"
-    args['dir_path'] = f"CG_t{args['t_total']}_{num_fib}fib"
-    # args['dir_path'] = f"SP_t{args['t_total']}_{num_fib}fib"
+    args['dir_path'] = f"CG/CG_t{args['t_total']}_{num_fib}fib"
+    # args['dir_path'] = f"SP/SP_t{args['t_total']}_{num_fib}fib"
     args['strain_max'] = 0.012
     dt = 10/args['t_total']
 
@@ -95,43 +95,45 @@ def test_fea_solve_dmg():
     def matrix_properties(cells, Q: int):
         # Neat 5220 Epoxy
         matrix_mat_params_eqm = jnp.zeros(shape=(cells.shape[0], Q, 11))
-        matrix_mat_params_eqm = matrix_mat_params_eqm.at[:, :, 0].set(3900)     # E   MPa
-        matrix_mat_params_eqm = matrix_mat_params_eqm.at[:, :, 1].set(0.39)     # nu
-        # Epoxy damage properties
-        matrix_mat_params_eqm = matrix_mat_params_eqm.at[:, :, 2].set(0.95)     # P1, A
-        matrix_mat_params_eqm = matrix_mat_params_eqm.at[:, :, 3].set(2.0)      # P2, B
-        matrix_mat_params_eqm = matrix_mat_params_eqm.at[:, :, 4].set(10.0)     # mu_visc
-        matrix_mat_params_eqm = matrix_mat_params_eqm.at[:, :, 5].set(0.35)     # eps_c
-        matrix_mat_params_eqm = matrix_mat_params_eqm.at[:, :, 6].set(0.04)     # eps_t
-        # Epoxy hardening properties
-        matrix_mat_params_eqm = matrix_mat_params_eqm.at[:, :, 7].set(79)       # sigmay_c  MPa
-        matrix_mat_params_eqm = matrix_mat_params_eqm.at[:, :, 8].set(62)       # sigmay_t  MPa
-        matrix_mat_params_eqm = matrix_mat_params_eqm.at[:, :, 9].set(2e4)      # H_ro, a
-        matrix_mat_params_eqm = matrix_mat_params_eqm.at[:, :, 10].set(12)      # n_ro, b
+        # Parameters follow Sepasdar & Shakiba, Compos Struct 281 (2022) 114986, Table 1; Eq. numbers refer to that paper
+        matrix_mat_params_eqm = matrix_mat_params_eqm.at[:, :, 0].set(3900)     # E         [MPa]       Young's modulus
+        matrix_mat_params_eqm = matrix_mat_params_eqm.at[:, :, 1].set(0.39)     # nu        [-]         Poisson's ratio
+        # Epoxy damage properties (Simo-Ju strain-based viscous damage, Eqs. 8-11)
+        matrix_mat_params_eqm = matrix_mat_params_eqm.at[:, :, 2].set(0.95)     # P1, A     [-]         damage parameter A in the damage function G = 1 - tau0*(1-A)/tau - A*exp(B*(tau0-tau)) (Eq. 9)
+        matrix_mat_params_eqm = matrix_mat_params_eqm.at[:, :, 3].set(2.0)      # P2, B     [MPa^-1/2]  damage parameter B, exponential rate in G (Eq. 9); multiplies tau0 - tau
+        matrix_mat_params_eqm = matrix_mat_params_eqm.at[:, :, 4].set(10.0)     # mu_visc   [1/s]       fluidity coefficient mu of the viscous damage update (Eqs. 10-11); mu*dt is dimensionless
+        matrix_mat_params_eqm = matrix_mat_params_eqm.at[:, :, 5].set(0.35)     # eps_c     [-]         failure strain in compression, sets damage initiation (Eq. 8)
+        matrix_mat_params_eqm = matrix_mat_params_eqm.at[:, :, 6].set(0.04)     # eps_t     [-]         failure strain in tension, sets damage initiation (Eq. 8)
+        # Epoxy hardening properties (Tschoegl yield criterion, Ramberg-Osgood hardening, Eqs. 1-6)
+        matrix_mat_params_eqm = matrix_mat_params_eqm.at[:, :, 7].set(79)       # sigmay_c  [MPa]       yield strength in compression (Eq. 2)
+        matrix_mat_params_eqm = matrix_mat_params_eqm.at[:, :, 8].set(62)       # sigmay_t  [MPa]       yield strength in tension (Eq. 2)
+        matrix_mat_params_eqm = matrix_mat_params_eqm.at[:, :, 9].set(2e4)      # H_ro, a   [MPa]       Ramberg-Osgood parameter a, hardening modulus H at yield onset; here H = a*(vM0/vM)^b (paper Eq. 6 uses the Tschoegl f instead)
+        matrix_mat_params_eqm = matrix_mat_params_eqm.at[:, :, 10].set(12)      # n_ro, b   [-]         Ramberg-Osgood exponent b, shape of the smooth elastic-to-plastic transition (Eq. 6)
         return matrix_mat_params_eqm
 
     @partial(jax.jit, static_argnames=('Q',))
     def fiber_properties(cells, Q: int):
         # IM7 Fiber
         fiber_mat_params_eqm = jnp.zeros(shape=(cells.shape[0], Q, 5))
-        fiber_mat_params_eqm = fiber_mat_params_eqm.at[:, :, 0].set(233e3)  # E_xx
-        fiber_mat_params_eqm = fiber_mat_params_eqm.at[:, :, 1].set(23.1e3) # E_yy
-        fiber_mat_params_eqm = fiber_mat_params_eqm.at[:, :, 2].set(0.2)    # nu_xy
-        fiber_mat_params_eqm = fiber_mat_params_eqm.at[:, :, 3].set(8.96e3) # G_xy
-        fiber_mat_params_eqm = fiber_mat_params_eqm.at[:, :, 4].set(8.27e3) # G_yz
+        # Transversely isotropic carbon fiber, Sepasdar & Shakiba (2022) Table 2; 1 = fiber axis, 2 and 3 = transverse
+        fiber_mat_params_eqm = fiber_mat_params_eqm.at[:, :, 0].set(233e3)  # E_xx   [MPa]  Young's modulus along the fiber axis, E1
+        fiber_mat_params_eqm = fiber_mat_params_eqm.at[:, :, 1].set(23.1e3) # E_yy   [MPa]  transverse Young's modulus, E2 = E3
+        fiber_mat_params_eqm = fiber_mat_params_eqm.at[:, :, 2].set(0.2)    # nu_xy  [-]    Poisson's ratio nu12 = nu13
+        fiber_mat_params_eqm = fiber_mat_params_eqm.at[:, :, 3].set(8.96e3) # G_xy   [MPa]  shear modulus G12
+        fiber_mat_params_eqm = fiber_mat_params_eqm.at[:, :, 4].set(8.27e3) # G_yz   [MPa]  transverse shear modulus G23; sets nu23 = E2/(2*G23) - 1
         return fiber_mat_params_eqm
 
     # Intialize internal_state_eqi
     @partial(jax.jit, static_argnames=('Q',))
     def matrix_ISV(cells, Q: int):
         matrix_internal_state_eqi = jnp.zeros(shape=(cells.shape[0], Q, 11))
-        matrix_internal_state_eqi = matrix_internal_state_eqi.at[...,0:3].set(0)    # e11, e22, e12
-        matrix_internal_state_eqi = matrix_internal_state_eqi.at[...,3:6].set(0)    # s11, s22, s12
-        matrix_internal_state_eqi = matrix_internal_state_eqi.at[...,6]  .set(0)    # D
-        matrix_internal_state_eqi = matrix_internal_state_eqi.at[...,7]  .set(0)    # Y
-        matrix_internal_state_eqi = matrix_internal_state_eqi.at[...,8]  .set(0)    # tau0
-        matrix_internal_state_eqi = matrix_internal_state_eqi.at[...,9]  .set(0)    # vM0
-        matrix_internal_state_eqi = matrix_internal_state_eqi.at[...,10] .set(dt)   # dt
+        matrix_internal_state_eqi = matrix_internal_state_eqi.at[...,0:3].set(0)    # e11, e22, e12  [-]        strain at the previous step (Voigt; e12 is engineering shear 2*eps_12)
+        matrix_internal_state_eqi = matrix_internal_state_eqi.at[...,3:6].set(0)    # s11, s22, s12  [MPa]      effective (undamaged) stress at the previous step
+        matrix_internal_state_eqi = matrix_internal_state_eqi.at[...,6]  .set(0)    # D              [-]        damage parameter d, 0 = undamaged, 1 = fully damaged (Eq. 7)
+        matrix_internal_state_eqi = matrix_internal_state_eqi.at[...,7]  .set(0)    # Y              [-]        damage threshold Y, never decreases (Eq. 11)
+        matrix_internal_state_eqi = matrix_internal_state_eqi.at[...,8]  .set(0)    # tau0           [MPa^1/2]  initial damage threshold tau0 = 0.999*tau at damage onset, tau = sqrt(2*strain energy) (Eq. 9); 0 until onset
+        matrix_internal_state_eqi = matrix_internal_state_eqi.at[...,9]  .set(0)    # vM0            [MPa]      von Mises stress at yield onset, used in H; 0 until onset
+        matrix_internal_state_eqi = matrix_internal_state_eqi.at[...,10] .set(dt)   # dt             [s]        pseudo-time increment dt (Eqs. 10-11)
         return matrix_internal_state_eqi
 
     @partial(jax.jit, static_argnames=('Q',))

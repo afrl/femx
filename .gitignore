@@ -2,9 +2,15 @@
 *.ncu-rep
 *.prof
 *.png
+*.svg
 *.npy
 *.log
 *.out
+*.bp
+*.ipynb
+*.md
+*.html
+*.env
 .DS_Store
 
 __pycache__/
@@ -24,13 +30,11 @@ tests/IGFEM_ref/
 tests/__pycache__/
 jax-trace*
 PIGFEM*
-.env
-*.bp
 *adios*
-*.ipynb
 jetsci_git
 .env
 adjustedOrderingTestOutput
 jvp_emoryOutput
 memoryOutput
 testoutput
+manuscript
