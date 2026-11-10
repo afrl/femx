@@ -14,7 +14,7 @@ import warnings
 
 import numpy as np
 
-from fe_jax.basis_quadrature import (
+from .basis_quadrature import (
     CellType,
     ElementFamily,
     LagrangeVariant,

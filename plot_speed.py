@@ -10,11 +10,11 @@ FIBERS = [1, 2, 4, 9, 16, 23, 33, 36, 46, 49, 60, 64, 100, 200, 400, 800, 1600, 
 # `fibers` is optional and defaults to FIBERS.
 SERIES = [
     dict(label='IGFEM',        path='tests/IGFEM_ref/{n}fib_t500/statistics.txt'),
-    dict(label='JAX (CG)',     path='tests/output/CG_t500_{n}fib/statistics.txt'),
-    dict(label='JAX (SP)',     path='tests/output/SP_t500_{n}fib/statistics.txt'),
-    dict(label='JetSCI (CG)',  path='tests/output/jetsci_t500_{n}fib/statistics.txt'),
-    dict(label='JetSCI (ILU)', path='tests/output/jetsci_ILU_t500_{n}fib/statistics.txt'),
-    # dict(label='update (CG)',  path='tests/output/update_CG_t500_{n}fib/statistics.txt'),
+    dict(label='JAX (CG)',     path='tests/output/CG/CG_t500_{n}fib/statistics.txt'),
+    dict(label='JAX (SP)',     path='tests/output/SP/SP_t500_{n}fib/statistics.txt'),
+    dict(label='JetSCI (CG)',  path='tests/output/jetsci/jetsci_t500_{n}fib/statistics.txt'),
+    dict(label='JetSCI (ILU)', path='tests/output/jetsci_ILU/jetsci_ILU_t500_{n}fib/statistics.txt'),
+    # dict(label='update (CG)',  path='tests/output/update_CG/update_CG_t500_{n}fib/statistics.txt'),
 ]
 
 COLORS = ['#4DA6FF', '#2CA02C', '#F08080', '#A86AF4', '#FF7F0E', '#8C564B', '#E377C2', '#7F7F7F', '#BCBD22', '#17BECF']

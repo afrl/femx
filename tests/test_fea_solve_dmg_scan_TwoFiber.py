@@ -2,7 +2,7 @@ import meshio
 import numpy as np
 
 from helper import *
-from igfem_mesh import *
+from fe_jax.igfem_mesh import *
 from typing import Any
 
 import os
