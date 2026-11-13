@@ -13,7 +13,14 @@ if __name__ == "__main__":
 # from jax_smi import initialise_tracking
 # initialise_tracking()
 
-def run_truss_2D_bar(n_elements: int, end_point: tuple,stretch_factor: tuple,label: str):
+def run_truss_2D_bar(
+    n_elements: int,
+    end_point: tuple,
+    stretch_factor: tuple,
+    label: str,
+    basis_deg: int = 1,
+    quad_deg: int =2
+):
     """
     This test case assums ALL rods start at (0,0,0),
     this makes the stretch/compression easy to apply.
@@ -39,10 +46,10 @@ def run_truss_2D_bar(n_elements: int, end_point: tuple,stretch_factor: tuple,lab
     fe_type = FiniteElementType(
         cell_type=CellType.interval,
         family=ElementFamily.P,
-        basis_degree=1,
+        basis_degree=basis_deg,
         lagrange_variant=LagrangeVariant.equispaced,
         quadrature_type=QuadratureType.default,
-        quadrature_degree=2,
+        quadrature_degree=quad_deg,
     )
     Q = get_quadrature(fe_type=fe_type)[0].shape[0]  # number of quadrature points
 

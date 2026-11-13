@@ -66,7 +66,14 @@ class ElementBatch:
             "strain_measure",
             StrainMeasure.from_value(self.strain_measure),
         )
-        Q = get_quadrature(fe_type=self.fe_type)[0].shape[0]
+        xi_qp, _ = get_quadrature(fe_type=self.fe_type)
+        phi, _ = eval_basis_and_derivatives(fe_type=self.fe_type, xi_qp=xi_qp)
+        n_basis_nodes = phi.shape[1]
+        assert (
+            self.connectivity_en.shape[1] == n_basis_nodes
+        ), f"`connectivity_en` has {self.connectivity_en.shape[1]} nodes per element, but `fe_type` with basis_degree={self.fe_type.basis_degree} expects {n_basis_nodes} nodes per element."
+
+        Q = xi_qp.shape[0]
         if len(self.material_params.shape) == 2:
             # Dimensions should be (E, M)
             assert (

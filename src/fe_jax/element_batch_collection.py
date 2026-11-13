@@ -285,13 +285,13 @@ class ElementBatchCollection:
                 return jax.lax.dynamic_slice(
                     self.weights,
                     start_indices=(self.weights_offsets[i],),
-                    slice_sizes=(self.E[i],),
-                )
+                    slice_sizes=(self.E[i] * self.Q[i],),
+                ).reshape((self.E[i], self.Q[i]))
             case _:  # Q
                 return jax.lax.dynamic_slice(
                     self.weights,
                     start_indices=(self.weights_offsets[i],),
-                    slice_sizes=(1,),
+                    slice_sizes=(self.Q[i],),
                 )
 
     @partial(jax.jit, static_argnames="i")
