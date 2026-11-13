@@ -249,7 +249,7 @@ def _build_newton_rod_contact_search_jax_callable(
     )
 
 
-def build_newton_rods_contact(
+def build_warp_rod_contact_context(
     fabric,
     self_adjacency_block: int = 1,
     *,
@@ -387,7 +387,7 @@ def build_newton_rods_contact(
     )
 
 
-def NewtonRodContactSearch(
+def warp_rod_contact_search(
     ctx: NewtonRodContactContext,
     current_points_jax: jnp.ndarray,
 ) -> RodContactResult:

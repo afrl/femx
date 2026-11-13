@@ -2,8 +2,6 @@ from dataclasses import dataclass
 import jax
 import jax.numpy as jnp
 import numpy as np
-import warp as wp
-import newton
 from .params import pack_fixed_contact_cells
 
 try:
@@ -27,13 +25,6 @@ def _require_newton_warp():
         "those packages."
     ) from _NEWTON_WARP_IMPORT_ERROR
 
-# class ContactBackend(Enum):
-#     SCIPY_KDTREE = "scipy_kdtree"
-#     NEWTON_WARP = "newton_warp"
-#     AUTO = "auto"
-
-# class ContactCapacityError(OverflowError):
-#     pass
 @dataclass
 class NewtonContactContext:
     model: object
@@ -45,7 +36,7 @@ class NewtonContactContext:
     contact_search_jax_callable: object
     contact_capacity: int
 
-def build_newton_node_cloud_contact(
+def build_warp_contact_context(
     points,
     point_diameters,
     contact_search_alpha,
@@ -240,7 +231,7 @@ def update_newton_node_body_positions(ctx, current_points):
         device=ctx.model.device,
     )
 
-def NewtonContactSearch_jitless(ctx: NewtonContactContext, current_points_jax: jnp.ndarray):
+def warp_contact_search_jitless(ctx: NewtonContactContext, current_points_jax: jnp.ndarray):
     _require_newton_warp()
     update_newton_node_body_positions(ctx=ctx, current_points=current_points_jax)
     ctx.collision_pipe.collide(ctx.state, ctx.contacts)
@@ -255,7 +246,7 @@ def NewtonContactSearch_jitless(ctx: NewtonContactContext, current_points_jax: j
 
     return node0, node1, active, count
 
-def NewtonContactSearch(ctx: NewtonContactContext, current_points_jax: jnp.ndarray):
+def warp_contact_search(ctx: NewtonContactContext, current_points_jax: jnp.ndarray):
     _require_newton_warp()
     node0, node1, active_i32, count = ctx.contact_search_jax_callable(
         jnp.asarray(current_points_jax, dtype=jnp.float32),
@@ -265,7 +256,7 @@ def NewtonContactSearch(ctx: NewtonContactContext, current_points_jax: jnp.ndarr
 
     return node0, node1, active, count
 
-def raise_if_contact_capacity_exhausted(
+def raise_if_warp_contact_capacity_exhausted(
     ctx: NewtonContactContext,
     count: jnp.ndarray,
     capacity_exhausted: jnp.ndarray,
@@ -281,7 +272,7 @@ def warp_contact_batch(
     current_points_jax: jnp.ndarray,
     dummy_pair: jnp.ndarray,
 ) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]:
-    node0, node1, active, count = NewtonContactSearch(ctx, current_points_jax)
+    node0, node1, active, count = warp_contact_search(ctx, current_points_jax)
 
     return pack_fixed_contact_cells(
         node0=node0,

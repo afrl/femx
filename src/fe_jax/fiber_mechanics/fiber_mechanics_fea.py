@@ -240,7 +240,7 @@ def solve_fiber_mechanics_bvp(
                 "ContactBackend.NEWTON_WARP currently requires 3D points because "
                 "the Newton/Warp node-cloud contact model uses wp.vec3 positions."
             )
-        newton_contact_ctx = build_newton_node_cloud_contact(
+        newton_contact_ctx = build_warp_contact_context(
             points=vertices_vd,
             point_diameters=point_diameters,
             contact_search_alpha=contact_options.contact_search_alpha,
@@ -261,7 +261,7 @@ def solve_fiber_mechanics_bvp(
                 current_points_jax=jnp.asarray(current_points),
                 dummy_pair=shared_dummy_pair,
             )
-            raise_if_contact_capacity_exhausted(
+            raise_if_warp_contact_capacity_exhausted(
                 ctx=newton_contact_ctx,
                 count=count,
                 capacity_exhausted=capacity_exhausted,
@@ -283,35 +283,35 @@ def solve_fiber_mechanics_bvp(
             ]
 
     # Precompute grid geometry for JAX_HASH once on the initial reference configuration
-    jaxhash_grid = None
+    jax_hash_grid = None
     if contact_backend == ContactBackend.JAX_HASH:
         query_radius = float(contact_options.contact_search_alpha * 2.0 * np.max(point_radii))
-        jaxhash_grid = pad_hash_cells(
+        jax_hash_grid = pad_hash_cells(
             points=vertices_vd,
             query_radius=query_radius,
             pad_size=contact_options.hash_pad_size,
             cell_capacity_buffer=contact_options.cell_capacity_buffer,
         )
         if contact_options.rigid_contact_max is None:
-            contact_options.rigid_contact_max = estimate_jaxhash_rigid_contact_max(
+            contact_options.rigid_contact_max = estimate_jax_hash_rigid_contact_max(
                 points=vertices_vd,
                 point_fiber_ids=point_fiber_ids,
                 point_diameters=point_diameters,
                 search2radius_ratio=contact_options.contact_search_alpha,
                 adjacency_block=self_adjacency_block,
-                grid_params=jaxhash_grid,
+                grid_params=jax_hash_grid,
                 rigid_contact_factor=1.5,
             )
 
-    def jaxhash_contact_pair_generator(u_ref) -> list[ElementBatch]:
+    def jax_hash_contact_pair_generator(u_ref) -> list[ElementBatch]:
         with profile_segment(StandardSegment.CONTACT_SEARCH):
             if u_ref is None:
                 current_points = vertices_vd
             else:
                 current_points = vertices_vd + np.asarray(u_ref).reshape(vertices_vd.shape)
 
-            domain_min, Nx, Ny, Nz, total_cells, C_max = jaxhash_grid
-            contact_cells, active, count, capacity_exhausted = jaxhash_contact_batch(
+            domain_min, Nx, Ny, Nz, total_cells, C_max = jax_hash_grid
+            contact_cells, active, count, capacity_exhausted = jax_hash_contact_batch(
                 points=current_points,
                 point_fiber_ids=point_fiber_ids,
                 adjacency_block=self_adjacency_block,
@@ -326,7 +326,7 @@ def solve_fiber_mechanics_bvp(
                 C_max=C_max,
                 dummy_pair=shared_dummy_pair,
             )
-            raise_if_jaxhash_contact_capacity_exhausted(
+            raise_if_jax_hash_contact_capacity_exhausted(
                 capacity=contact_options.rigid_contact_max,
                 count=count,
                 capacity_exhausted=capacity_exhausted,
@@ -423,7 +423,7 @@ def solve_fiber_mechanics_bvp(
             ]
 
     if contact_backend == ContactBackend.JAX_HASH:
-        contact_pair_generator = jaxhash_contact_pair_generator
+        contact_pair_generator = jax_hash_contact_pair_generator
     elif contact_backend == ContactBackend.SCIPY_KDTREE:
         contact_pair_generator = scipy_contact_pair_generator
     elif contact_backend == ContactBackend.NEWTON_WARP:

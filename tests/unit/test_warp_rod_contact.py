@@ -5,8 +5,8 @@ import numpy as np
 
 from fe_jax.contact.warp_rod_contact import (
     NEWTON_WARP_AVAILABLE,
-    build_newton_rods_contact,
-    NewtonRodContactSearch,
+    build_warp_rod_contact_context,
+    warp_rod_contact_search,
     RodContactResult,
 )
 from fe_jax.helper import read_fabric
@@ -16,12 +16,12 @@ from fe_jax.helper import read_fabric
 def test_warp_rod_contact_basic():
     fabric = read_fabric("experiments/initial_single_fiber/initial_single_fiber.fab")
     capacity = 15000
-    ctx = build_newton_rods_contact(fabric, rigid_contact_max=capacity)
+    ctx = build_warp_rod_contact_context(fabric, rigid_contact_max=capacity)
 
     points_jax = jnp.asarray(fabric.points, dtype=jnp.float32)
 
     # 1. Test search
-    res = NewtonRodContactSearch(ctx, points_jax)
+    res = warp_rod_contact_search(ctx, points_jax)
     assert isinstance(res, RodContactResult)
     assert res.seg0.shape == (capacity,)
     assert res.seg1.shape == (capacity,)
@@ -34,7 +34,7 @@ def test_warp_rod_contact_basic():
     # 2. Test inside @jax.jit
     @jax.jit
     def jitted_search(pts):
-        return NewtonRodContactSearch(ctx, pts)
+        return warp_rod_contact_search(ctx, pts)
 
     res_jit = jitted_search(points_jax)
     jax.block_until_ready(res_jit)
@@ -45,7 +45,7 @@ def test_warp_rod_contact_basic():
 @pytest.mark.skipif(not NEWTON_WARP_AVAILABLE, reason="Newton/Warp not installed")
 def test_warp_rod_contact_displacement():
     fabric = read_fabric("experiments/initial_single_fiber/initial_single_fiber.fab")
-    ctx = build_newton_rods_contact(fabric, rigid_contact_max=1000)
+    ctx = build_warp_rod_contact_context(fabric, rigid_contact_max=1000)
 
     # Separate points far away so no contacts occur
     points_far = jnp.asarray(fabric.points, dtype=jnp.float32)
@@ -55,7 +55,7 @@ def test_warp_rod_contact_displacement():
 
     @jax.jit
     def jitted_search(pts):
-        return NewtonRodContactSearch(ctx, pts)
+        return warp_rod_contact_search(ctx, pts)
 
     res = jitted_search(points_far)
     jax.block_until_ready(res)

@@ -46,7 +46,7 @@ def scipy_contact():
     return sort_contact(contact_cells)
 
 def build_warp():
-    ctx = build_newton_node_cloud_contact(
+    ctx = build_warp_contact_context(
         points=points,
         point_diameters=point_diameters,
         contact_search_alpha=contact_search_alpha,
@@ -101,8 +101,8 @@ def prep_jax_hash(search2radius_ratio = contact_search_alpha, pad_size = 3):
     )
     return domain_min, Nx, Ny, Nz, total_cells, C_max
 
-def jaxhash_contact(domain_min, Nx, Ny, Nz, total_cells, C_max):
-    contact_cells, active, count, capacity_exhausted = jaxhash_contact_batch(
+def jax_hash_contact(domain_min, Nx, Ny, Nz, total_cells, C_max):
+    contact_cells, active, count, capacity_exhausted = jax_hash_contact_batch(
         points = points,
         point_fiber_ids = point_fiber_ids,
         adjacency_block = self_adjacency_block,

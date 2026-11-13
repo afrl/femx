@@ -114,14 +114,14 @@ def compute_dynamic_batch_params(
     return n_batch, num_batches, hw_info
 
 
-def raise_if_jaxhash_contact_capacity_exhausted(
+def raise_if_jax_hash_contact_capacity_exhausted(
     capacity: int,
     count: jnp.ndarray,
     capacity_exhausted: jnp.ndarray,
 ):
     if bool(capacity_exhausted):
         raise ContactCapacityError(
-            f"jaxhash contact search reached rigid_contact_max={capacity} "
+            f"jax_hash contact search reached rigid_contact_max={capacity} "
             f"with count={int(count)}. Increase ContactParams.rigid_contact_max."
         )
 
@@ -184,7 +184,7 @@ FORWARD_CELLS = [
         "num_batches",
     ),
 )
-def _jaxhash_contact_count_scanned_kernel(
+def _jax_hash_contact_count_scanned_kernel(
     points: jnp.ndarray,
     point_fiber_ids: jnp.ndarray,
     point_radii: jnp.ndarray,
@@ -283,7 +283,7 @@ def _jaxhash_contact_count_scanned_kernel(
         "num_batches",
     ),
 )
-def _jaxhash_contact_scanned_kernel(
+def _jax_hash_contact_scanned_kernel(
     points: jnp.ndarray,
     point_fiber_ids: jnp.ndarray,
     point_radii: jnp.ndarray,
@@ -407,7 +407,7 @@ def _jaxhash_contact_scanned_kernel(
 
     return contact_cells, active, total_count, capacity_exhausted
 
-def estimate_jaxhash_rigid_contact_max(
+def estimate_jax_hash_rigid_contact_max(
     points: jnp.ndarray | np.ndarray,
     point_fiber_ids: jnp.ndarray | np.ndarray,
     point_diameters: jnp.ndarray | np.ndarray,
@@ -430,7 +430,7 @@ def estimate_jaxhash_rigid_contact_max(
         num_batches = int((N + n_batch - 1) // n_batch)
 
     prelim_count = int(
-        _jaxhash_contact_count_scanned_kernel(
+        _jax_hash_contact_count_scanned_kernel(
             points=points_f32,
             point_fiber_ids=point_fiber_ids,
             point_radii=point_radii,
@@ -448,7 +448,7 @@ def estimate_jaxhash_rigid_contact_max(
     )
     return max(16, int(np.ceil(prelim_count * rigid_contact_factor)))
 
-def jaxhash_contact_batch(
+def jax_hash_contact_batch(
     points: jnp.ndarray | np.ndarray,
     point_fiber_ids: jnp.ndarray | np.ndarray,
     adjacency_block: int,
@@ -532,7 +532,7 @@ def jaxhash_contact_batch(
     jax.debug.print("n_batch = {nb}\n num_batches = {num_b}",nb=n_batch,num_b=num_batches)
     if rigid_contact_max is None:
         prelim_count = int(
-            _jaxhash_contact_count_scanned_kernel(
+            _jax_hash_contact_count_scanned_kernel(
                 points=points_f32,
                 point_fiber_ids=point_fiber_ids,
                 point_radii=point_radii,
@@ -551,7 +551,7 @@ def jaxhash_contact_batch(
         rigid_contact_max = max(16, int(np.ceil(prelim_count * rigid_contact_factor)))
         jax.debug.print("rigid_contact_max = {rgm}",rgm=rigid_contact_max)
 
-    return _jaxhash_contact_scanned_kernel(
+    return _jax_hash_contact_scanned_kernel(
         points=points_f32,
         point_fiber_ids=point_fiber_ids,
         point_radii=point_radii,
@@ -571,4 +571,4 @@ def jaxhash_contact_batch(
 
 
 # Alias for compatibility with search queries
-jaxhash_search = jaxhash_contact_batch
+jax_hash_search = jax_hash_contact_batch

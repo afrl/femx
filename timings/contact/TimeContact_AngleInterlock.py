@@ -72,7 +72,7 @@ class AllContactSearch:
         )
 
     def build_warp(self):
-        self.ctx = build_newton_node_cloud_contact(
+        self.ctx = build_warp_contact_context(
             points=self.points_np,
             point_diameters=self.point_diameters_np,
             contact_search_alpha=self.contact_search_alpha,
@@ -85,13 +85,13 @@ class AllContactSearch:
         return warp_contact_batch(self.ctx, self.points, self.dummy_pair)
     
     def build_warp_rod(self):
-        self.ctx_rod = build_newton_rods_contact(
+        self.ctx_rod = build_warp_rod_contact_context(
             fabric=self.fabric,
             rigid_contact_max=self.rigid_contact_max,
             shape_pairs_max=self.shape_pairs_max,
         )
         # Pre-compile JIT search for rods
-        self._rod_search_jit = jax.jit(lambda pts: NewtonRodContactSearch(self.ctx_rod, pts))
+        self._rod_search_jit = jax.jit(lambda pts: warp_rod_contact_search(self.ctx_rod, pts))
         
     def warp_contact_rod(self):
         return self._rod_search_jit(self.points)
@@ -131,8 +131,8 @@ class AllContactSearch:
             pad_size=pad_size,
         )
     
-    def jaxhash_contact(self):
-        return jaxhash_contact_batch(
+    def jax_hash_contact(self):
+        return jax_hash_contact_batch(
             points=self.points,
             point_fiber_ids=self.point_fiber_ids,
             adjacency_block=self.self_adjacency_block,
@@ -211,7 +211,7 @@ def all_timings(fabric):
 
     # JAX Hash
     if timing_results['JAX_HASH_PREP'] is not None:
-        timing_results['JAX_HASH'], JH = run_and_time(acs.jaxhash_contact, n=50)
+        timing_results['JAX_HASH'], JH = run_and_time(acs.jax_hash_contact, n=50)
         timing_results['JAX_HASH_CONTACTS'] = int(JH[2]) if JH is not None else None
     else:
         timing_results['JAX_HASH'] = None

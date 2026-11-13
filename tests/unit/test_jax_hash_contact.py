@@ -3,9 +3,9 @@ import numpy as np
 import jax
 import jax.numpy as jnp
 from fe_jax.contact import (
-    jaxhash_contact_batch,
+    jax_hash_contact_batch,
     pad_hash_cells,
-    raise_if_jaxhash_contact_capacity_exhausted,
+    raise_if_jax_hash_contact_capacity_exhausted,
     ContactCapacityError,
     ContactBackend,
     resolve_contact_backend,
@@ -16,7 +16,7 @@ from fe_jax.contact import (
 )
 
 
-def test_jaxhash_default_backend_resolution():
+def test_jax_hash_default_backend_resolution():
     assert resolve_contact_backend(ContactBackend.AUTO) == ContactBackend.JAX_HASH
     assert resolve_contact_backend("auto") == ContactBackend.JAX_HASH
     assert normalize_contact_backend("jaxhash") == ContactBackend.JAX_HASH
@@ -24,7 +24,7 @@ def test_jaxhash_default_backend_resolution():
     assert resolve_contact_backend("jaxhash") == ContactBackend.JAX_HASH
 
 
-def test_jaxhash_contact_batch_basic():
+def test_jax_hash_contact_batch_basic():
     p_fiber0 = np.array([[0.0, 0.0, z] for z in np.linspace(0, 10, 100)])
     p_fiber1 = np.array([[0.1, 0.0, z] for z in np.linspace(0, 10, 100)])
     points = np.vstack([p_fiber0, p_fiber1])
@@ -33,7 +33,7 @@ def test_jaxhash_contact_batch_basic():
     dummy_pair = np.array([0, 1], dtype=np.int32)
 
     capacity = 500
-    cells, active, count, exhausted = jaxhash_contact_batch(
+    cells, active, count, exhausted = jax_hash_contact_batch(
         points=points,
         point_fiber_ids=fiber_ids,
         adjacency_block=2,
@@ -53,7 +53,7 @@ def test_jaxhash_contact_batch_basic():
     assert np.all(np.asarray(cells[inactive]) == dummy_pair)
 
 
-def test_jaxhash_contact_batch_capacity_exhausted():
+def test_jax_hash_contact_batch_capacity_exhausted():
     p_fiber0 = np.array([[0.0, 0.0, z] for z in np.linspace(0, 10, 100)])
     p_fiber1 = np.array([[0.1, 0.0, z] for z in np.linspace(0, 10, 100)])
     points = np.vstack([p_fiber0, p_fiber1])
@@ -62,7 +62,7 @@ def test_jaxhash_contact_batch_capacity_exhausted():
     dummy_pair = np.array([0, 1], dtype=np.int32)
 
     capacity = 1
-    cells, active, count, exhausted = jaxhash_contact_batch(
+    cells, active, count, exhausted = jax_hash_contact_batch(
         points=points,
         point_fiber_ids=fiber_ids,
         adjacency_block=2,
@@ -74,10 +74,10 @@ def test_jaxhash_contact_batch_capacity_exhausted():
 
     assert bool(exhausted)
     with pytest.raises(ContactCapacityError, match="rigid_contact_max=1"):
-        raise_if_jaxhash_contact_capacity_exhausted(capacity, count, exhausted)
+        raise_if_jax_hash_contact_capacity_exhausted(capacity, count, exhausted)
 
 
-def test_jaxhash_contact_matches_scipy():
+def test_jax_hash_contact_matches_scipy():
     np.random.seed(42)
     N = 1000
     points = np.random.uniform(0, 5, size=(N, 3))
@@ -93,7 +93,7 @@ def test_jaxhash_contact_matches_scipy():
     )
 
     capacity = 15000
-    cells, active, count, exhausted = jaxhash_contact_batch(
+    cells, active, count, exhausted = jax_hash_contact_batch(
         points=points,
         point_fiber_ids=fiber_ids,
         adjacency_block=2,
@@ -118,7 +118,7 @@ def test_jaxhash_contact_matches_scipy():
     np.testing.assert_array_equal(s_sorted, j_sorted)
 
 
-def test_jaxhash_runs_on_cpu():
+def test_jax_hash_runs_on_cpu():
     cpu_device = jax.devices("cpu")[0]
     with jax.default_device(cpu_device):
         p_fiber0 = np.array([[0.0, 0.0, z] for z in np.linspace(0, 5, 50)])
@@ -128,7 +128,7 @@ def test_jaxhash_runs_on_cpu():
         diameters = np.full(100, 0.2)
 
         capacity = 500
-        cells, active, count, exhausted = jaxhash_contact_batch(
+        cells, active, count, exhausted = jax_hash_contact_batch(
             points=points,
             point_fiber_ids=fiber_ids,
             adjacency_block=2,
@@ -142,7 +142,7 @@ def test_jaxhash_runs_on_cpu():
         assert not bool(exhausted)
 
 
-def test_jaxhash_contact_batch_optional_rigid_contact_max():
+def test_jax_hash_contact_batch_optional_rigid_contact_max():
     p_fiber0 = np.array([[0.0, 0.0, z] for z in np.linspace(0, 10, 100)])
     p_fiber1 = np.array([[0.1, 0.0, z] for z in np.linspace(0, 10, 100)])
     points = np.vstack([p_fiber0, p_fiber1])
@@ -150,7 +150,7 @@ def test_jaxhash_contact_batch_optional_rigid_contact_max():
     diameters = np.full(200, 0.2)
 
     # Call with rigid_contact_max=None (default)
-    cells_auto, active_auto, count_auto, exhausted_auto = jaxhash_contact_batch(
+    cells_auto, active_auto, count_auto, exhausted_auto = jax_hash_contact_batch(
         points=points,
         point_fiber_ids=fiber_ids,
         adjacency_block=2,
@@ -160,7 +160,7 @@ def test_jaxhash_contact_batch_optional_rigid_contact_max():
     )
 
     # Call with explicit rigid_contact_max
-    cells_exp, active_exp, count_exp, exhausted_exp = jaxhash_contact_batch(
+    cells_exp, active_exp, count_exp, exhausted_exp = jax_hash_contact_batch(
         points=points,
         point_fiber_ids=fiber_ids,
         adjacency_block=2,
@@ -199,7 +199,7 @@ def test_compute_dynamic_batch_params():
     assert n_batch % hw_info["hardware_concurrency"] == 0 or n_batch == N
 
 
-def test_jaxhash_explicit_node_batching_matches_unbatched():
+def test_jax_hash_explicit_node_batching_matches_unbatched():
     np.random.seed(123)
     N = 2000
     points = np.random.uniform(0, 5, size=(N, 3))
@@ -209,7 +209,7 @@ def test_jaxhash_explicit_node_batching_matches_unbatched():
     capacity = 10000
 
     # Run with default dynamic batching
-    cells_auto, active_auto, count_auto, _ = jaxhash_contact_batch(
+    cells_auto, active_auto, count_auto, _ = jax_hash_contact_batch(
         points=points,
         point_fiber_ids=fiber_ids,
         adjacency_block=2,
@@ -221,7 +221,7 @@ def test_jaxhash_explicit_node_batching_matches_unbatched():
     )
 
     # Run with small forced batch size (e.g., 250 nodes per batch -> 8 batches)
-    cells_batched, active_batched, count_batched, _ = jaxhash_contact_batch(
+    cells_batched, active_batched, count_batched, _ = jax_hash_contact_batch(
         points=points,
         point_fiber_ids=fiber_ids,
         adjacency_block=2,
