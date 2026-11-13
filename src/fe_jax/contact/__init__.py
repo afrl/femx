@@ -7,3 +7,4 @@ from .cupyx_contact import *
 from .warp_contact import *
 from .warp_rod_contact import *
 from .pairwise_contact import *
+from .constitutive import *
