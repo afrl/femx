@@ -2,6 +2,7 @@ from igl import adjacency_list
 from .contact import ContactPreprocessConfig
 from .setup import *
 from .utils import *
+from .element_batch import StrainMeasure
 from .element_batch_collection import *
 from .solve_cg import cg as cg_w_info
 from .sparse_matrix import *
@@ -24,6 +25,45 @@ from typing import Callable, Any
 
 from flax import struct
 
+@dataclass
+class PreprocessedBVP:
+    ebc: ElementBatchCollection
+    assembly_map_b: list[jsparse.BCSR]
+    constraint_system: ConstraintSystem
+    jacobian_nnz: int
+    element_residual_func: jax.tree_util.Partial
+    f_ext: LoadSystem
+    element_batches: list[ElementBatch]
+    dof_enumeration: DofEnumeration
+    n_vertices: int
+    base_batch_count: int
+    contact_batch_index: int | None
+    contact_connectivity_en: np.ndarray | None
+
+
+def _append_contact_batches(element_batches, contact_batch_generator, u_0_g):
+    base_batch_count = len(element_batches)
+    contact_batch_index = None
+    if contact_batch_generator is not None:
+        contact_batches = contact_batch_generator(u_0_g)
+        if contact_batches is None:
+            contact_batches = []
+        if len(contact_batches) > 0:
+            contact_batch_index = base_batch_count
+        element_batches = [*element_batches, *contact_batches]
+    return element_batches, base_batch_count, contact_batch_index
+
+
+def _assert_same_batch_layout(previous: PreprocessedBVP, element_batches: list[ElementBatch]):
+    E = tuple(b.connectivity_en.shape[0] for b in element_batches)
+    N = tuple(b.connectivity_en.shape[1] for b in element_batches)
+    U = tuple(b.n_dofs_per_basis for b in element_batches)
+    M = tuple(b.material_params.shape[-1] for b in element_batches)
+    if E != previous.ebc.E or N != previous.ebc.N or U != previous.ebc.U or M != previous.ebc.M:
+        raise ValueError(
+            "Dynamic BVP preprocess requires fixed batch layout. "
+            "For Newton/Warp contact, ensure the contact batch is fixed-capacity."
+        )
 
 @partial(jax.jit, static_argnames=["i", "E", "N", "U"])
 def __get_jacobian_indices(
@@ -73,7 +113,7 @@ def _calculate_jacobian_unique_nnz(
     return jnp.sum(uniq_mask)
 
 
-@jax.jit
+@partial(jax.jit, static_argnames=("strain_measure",))
 def _calculate_jacobian_batch_element_kernel(
     element_residual_func: jax.tree_util.Partial,
     constitutive_model: jax.tree_util.Partial,
@@ -83,6 +123,7 @@ def _calculate_jacobian_batch_element_kernel(
     W_q: jnp.ndarray,
     material_params: jnp.ndarray,
     internal_state: jnp.ndarray,
+    strain_measure: StrainMeasure,
 ) -> jnp.ndarray:
     """
     Calculates the element-level jacobian matrices for a batch of elements without any modification
@@ -118,15 +159,27 @@ def _calculate_jacobian_batch_element_kernel(
     @jax.jit
     def residual_kernel(u_t, x_nd, material_params, internal_state_qi):
         u_nd = u_t.reshape(N, D)
-        R_nu = element_residual_func(
-            u_nd=u_nd,
-            x_nd=x_nd,
-            dphi_dxi_qnp=dphi_dxi_qnp,
-            W_q=W_q,
-            material_params=material_params,
-            internal_state_qi=internal_state_qi,
-            constitutive_model=constitutive_model,
-        )[0]
+        if is_required(element_residual_func, "strain_measure"):
+            R_nu = element_residual_func(
+                u_nd=u_nd,
+                x_nd=x_nd,
+                dphi_dxi_qnp=dphi_dxi_qnp,
+                W_q=W_q,
+                material_params=material_params,
+                internal_state_qi=internal_state_qi,
+                constitutive_model=constitutive_model,
+                strain_measure=strain_measure,
+            )[0]
+        else:
+            R_nu = element_residual_func(
+                u_nd=u_nd,
+                x_nd=x_nd,
+                dphi_dxi_qnp=dphi_dxi_qnp,
+                W_q=W_q,
+                material_params=material_params,
+                internal_state_qi=internal_state_qi,
+                constitutive_model=constitutive_model,
+            )[0]
         return R_nu.reshape(N * U)
 
     J_ett = jax.vmap(
@@ -148,7 +201,7 @@ def _calculate_jacobian_batch_element_kernel(
     return J_ett
 
 
-@jax.jit
+@partial(jax.jit, static_argnames=("strain_measure",))
 def _calculate_jacobian_coo_terms_batch(
     element_residual_func: jax.tree_util.Partial,
     constitutive_model: jax.tree_util.Partial,
@@ -160,6 +213,7 @@ def _calculate_jacobian_coo_terms_batch(
     dof_map_enu: jnp.ndarray,
     assembly_map: jsparse.BCSR,
     u_f: jnp.ndarray,
+    strain_measure: StrainMeasure,
 ):
     u_enu = transform_global_unraveled_to_element_node(
         assembly_map, u_f, x_end.shape[0]
@@ -180,6 +234,7 @@ def _calculate_jacobian_coo_terms_batch(
         W_q=W_q,
         material_params=material_params,
         internal_state=internal_state,
+        strain_measure=strain_measure,
     )
     # debug_print(J_ett)
 
@@ -215,6 +270,7 @@ def calculate_jacobian_wo_constraints(
                 dof_map_enu=ebc.get_dof_map(i),
                 assembly_map=assembly_map_b[i],
                 u_f=u_f,
+                strain_measure=ebc.strain_measures[i],
             )
             for i in range(ebc.B)
         ]
@@ -267,7 +323,7 @@ def calculate_jacobian_wo_constraints(
     return J_sparse_ff
 
 
-@jax.jit
+@partial(jax.jit, static_argnames=("strain_measure",))
 def _calculate_jacobian_diag_batch_element_kernel(
     element_residual_func: jax.tree_util.Partial,
     constitutive_model: jax.tree_util.Partial,
@@ -277,6 +333,7 @@ def _calculate_jacobian_diag_batch_element_kernel(
     W_q: jnp.ndarray,
     material_params: jnp.ndarray,
     internal_state: jnp.ndarray,
+    strain_measure: StrainMeasure,
 ) -> jnp.ndarray:
     """
     Calculates the element-level jacobian diagonal matrices for a batch of elements without
@@ -312,15 +369,27 @@ def _calculate_jacobian_diag_batch_element_kernel(
     @jax.jit
     def residual_kernel(u_t, x_nd, material_params, internal_state):
         u_nd = u_t.reshape(N, D)
-        R_nu = element_residual_func(
-            u_nd=u_nd,
-            x_nd=x_nd,
-            dphi_dxi_qnp=dphi_dxi_qnp,
-            W_q=W_q,
-            material_params=material_params,
-            internal_state_qi=internal_state,
-            constitutive_model=constitutive_model,
-        )[0]
+        if is_required(element_residual_func, "strain_measure"):
+            R_nu = element_residual_func(
+                u_nd=u_nd,
+                x_nd=x_nd,
+                dphi_dxi_qnp=dphi_dxi_qnp,
+                W_q=W_q,
+                material_params=material_params,
+                internal_state_qi=internal_state,
+                constitutive_model=constitutive_model,
+                strain_measure=strain_measure,
+            )[0]
+        else:
+            R_nu = element_residual_func(
+                u_nd=u_nd,
+                x_nd=x_nd,
+                dphi_dxi_qnp=dphi_dxi_qnp,
+                W_q=W_q,
+                material_params=material_params,
+                internal_state_qi=internal_state,
+                constitutive_model=constitutive_model,
+            )[0]
         return R_nu.reshape(N * U)
 
     def diag_J(u_t, x_nd, material_params, internal_state):
@@ -350,7 +419,7 @@ def _calculate_jacobian_diag_batch_element_kernel(
     return diag_J_et
 
 
-@jax.jit
+@partial(jax.jit, static_argnames=("strain_measure",))
 def _calculate_jacobian_diag_coo_terms_batch(
     element_residual_func: jax.tree_util.Partial,
     constitutive_model: jax.tree_util.Partial,
@@ -362,6 +431,7 @@ def _calculate_jacobian_diag_coo_terms_batch(
     dof_map_enu: jnp.ndarray,
     assembly_map: jsparse.BCSR,
     u_f: jnp.ndarray,
+    strain_measure: StrainMeasure,
 ):
     u_enu = transform_global_unraveled_to_element_node(
         assembly_map, u_f, x_end.shape[0]
@@ -379,6 +449,7 @@ def _calculate_jacobian_diag_coo_terms_batch(
         W_q=W_q,
         material_params=material_params,
         internal_state=internal_state,
+        strain_measure=strain_measure,
     )
     # debug_print(diag_J_et)
 
@@ -410,6 +481,7 @@ def calculate_jacobian_diag_wo_constraints(
                 dof_map_enu=ebc.get_dof_map(i),
                 assembly_map=assembly_map_b[i],
                 u_f=u_f,
+                strain_measure=ebc.strain_measures[i],
             )
             for i in range(ebc.B)
         ]
@@ -428,7 +500,7 @@ def calculate_jacobian_diag_wo_constraints(
     return diag_J_f
 
 
-@jax.jit
+@partial(jax.jit, static_argnames=("strain_measure",))
 def _calculate_residual_wo_constraints_batch(
     element_residual_func: jax.tree_util.Partial,
     constitutive_model: jax.tree_util.Partial,
@@ -439,6 +511,7 @@ def _calculate_residual_wo_constraints_batch(
     W_q: jnp.ndarray,
     assembly_map: jsparse.BCSR,
     u_f: jnp.ndarray,
+    strain_measure: StrainMeasure,
 ):
     # Extract shape constants needed for args
     E = x_end.shape[0]
@@ -452,8 +525,14 @@ def _calculate_residual_wo_constraints_batch(
     u_enu = transform_global_unraveled_to_element_node(assembly_map, u_f, E)
 
     # A vmap'ed version of the element residual function that maps over the elements
+    residual_func = (
+        partial(element_residual_func, strain_measure=strain_measure)
+        if is_required(element_residual_func, "strain_measure")
+        else element_residual_func
+    )
+
     R_vmap = jax.vmap(
-        element_residual_func,
+        residual_func,
         in_axes=(
             0,  # u_end -> u_nd
             0,  # x_end -> x_nd
@@ -523,6 +602,7 @@ def calculate_residual_wo_constraints(
             W_q=ebc.get_weights(i),
             assembly_map=assembly_map_b[i],
             u_f=u_f,
+            strain_measure=ebc.strain_measures[i],
         )
         for i in range(ebc.B)
     ]  # for each item, 0: R_end, 1: internal_state
@@ -783,14 +863,14 @@ def solve_nonlinear_step(
             u_trial = u_f + alpha*delta_u
             R_trial = residual_func(u_trial)
             accepted = jnp.linalg.norm(R_trial) <= accepted_residual_growth_scale*norm_R0
-            jax.debug.print(
-                'n = {n}, alpha = {a}, ||R_trial|| = {Rt}, ||R_f|| = {Rf}, ||delta_u|| = {du}',
-                n = n,
-                a = alpha,
-                Rt = jnp.linalg.norm(R_trial),
-                Rf = norm_R0,
-                du = jnp.max(jnp.linalg.norm(delta_u.reshape((-1, 3)), axis=1)),
-            )
+            # jax.debug.print(
+            #     'n = {n}, alpha = {a}, ||R_trial|| = {Rt}, ||R_f|| = {Rf}, ||delta_u|| = {du}',
+            #     n = n,
+            #     a = alpha,
+            #     Rt = jnp.linalg.norm(R_trial),
+            #     Rf = norm_R0,
+            #     du = jnp.max(jnp.linalg.norm(delta_u.reshape((-1, 3)), axis=1)),
+            # )
             return alpha, u_trial, R_trial, n+1, accepted
 
         alpha = jnp.minimum(jnp.array(1.0), jnp.array(2.0)*initial_alpha)
@@ -860,7 +940,7 @@ def solve_nonlinear_step(
             x_0=u_f,
             f_ext=f_ext,
         )
-        jax.debug.print('linear_iterations: {x}',x=info.linear_iterations_per_nonlinear_iteration)
+        # jax.debug.print('linear_iterations: {x}',x=info.linear_iterations_per_nonlinear_iteration)
 
         debug_info.begin_stage(
             time_step=time_step,
@@ -976,7 +1056,7 @@ def convert_boundary_conditions(
     return (constraint_system, f_ext)
 
 
-def preprocess_bvp(
+def preprocess_bvp_initial(
     vertices_vd: np.ndarray[Any, np.dtype[np.floating[Any]]],
     element_batches: list[ElementBatch],
     element_residual_func: jax.tree_util.Partial,
@@ -1006,8 +1086,9 @@ def preprocess_bvp(
     U = element_batches[0].n_dofs_per_basis
     n_total_dofs = V * U + sum(global_values)
 
-    if contact_batch_generator is not None:
-        element_batches = [*element_batches, *contact_batch_generator(u_0_g)]
+    element_batches, base_batch_count, contact_batch_index = _append_contact_batches(
+        element_batches, contact_batch_generator, u_0_g
+    )
         # TODO print how many contact elements were discovered
 
     # Validate input
@@ -1019,12 +1100,6 @@ def preprocess_bvp(
         assert (
             b.n_dofs_per_basis == element_batches[0].n_dofs_per_basis
         ), "The current DoF enumeration algorithm requires that the number of DoFs per a basis support point be constant across batches."
-
-    # Structures for mapping between cell-level arrays and global arrays
-    assembly_map_b = [
-        mesh_to_sparse_assembly_map(n_vertices=V, cells=b.connectivity_en)
-        for b in element_batches
-    ]
 
     # Enumerate degrees of freedom
     # NOTE: this currently assumes that the element_batches contains ALL elements
@@ -1081,58 +1156,37 @@ def preprocess_bvp(
         multipoint_constraints=multipoint_constraints,
     )
 
-    return (
-        ebc,
-        assembly_map_b,
-        constraint_system,
-        jacobian_nnz,
-        element_residual_func,
-        f_ext,
+    contact_connectivity_en = None
+    if contact_batch_index is not None:
+        contact_connectivity_en = np.asarray(
+            element_batches[contact_batch_index].connectivity_en
+        ).copy()
+
+    return PreprocessedBVP(
+        ebc=ebc,
+        assembly_map_b=assembly_map_b,
+        constraint_system=constraint_system,
+        jacobian_nnz=jacobian_nnz,
+        element_residual_func=element_residual_func,
+        f_ext=f_ext,
+        element_batches=element_batches,
+        dof_enumeration=dof_enumeration,
+        n_vertices=V,
+        base_batch_count=base_batch_count,
+        contact_batch_index=contact_batch_index,
+        contact_connectivity_en=contact_connectivity_en,
     )
 
-
-def solve_bvp(
-    vertices_vd: np.ndarray[Any, np.dtype[np.floating[Any]]],
-    element_batches: list[ElementBatch],
-    element_residual_func: jax.tree_util.Partial,
-    boundary_conditions: List[DirichletBC | NeumannBC | PeriodicBC] | None = None,
-    multipoint_constraints: List[MultiPointConstraint] | None = None,
-    global_values: List[int] | None = None,
-    u_0_g: jnp.ndarray | None = None,
-    solver_options: SolverOptions = SolverOptions(),
-    plot_convergence: bool = False,
-    profile_memory: bool = False,
-    contact_batch_generator: Callable | None = None,
-    element_diagnostic_outputs: Callable | None = None,
-    debug_info: DebugInfo | None = None,
-    time_step: int = 0,
-) -> tuple[jnp.ndarray, jnp.ndarray, list[ElementBatch]]:
-    """
-    Solve a boundary value problem for static linear elasticity.
-
-    Parameters
-    ----------
-    vertices_vd          : vertices needed for all cells on the rank, ndarray[float, (V, D)]
-    element_batches      : batch of elements for this rank
-    element_residual_func: residual function emerging from weak form of governing equations
-    dirichlet_bcs        : Dirichlet boundary conditions, list[DirichletConstraint]
-    multipoint_constraints : Linear constraints between degrees of freedom, list[MultiPointConstraint]
-    global_values        : Length of list indicates number of global solution vector-values that will
-                           added to the global system (e.g. for periodic BCs). Each entry in the list
-                           indicates the number of components for each vector-value.
-    u_0_g                : initial guess for the solution, ndarray[float, (V * D)] or None (default, zeros will be used)
-    solver_options       : options for the linear/nonlinear solvers
-    plot_convergence     : indicates if the convergence history for the linear solver should be
-                           plotted via matplotlib as a figure
-    profile_memory       : indicates if GPU memory usage should be profiled, which will create *.prof
-                           files in the current directory
-
-    Returns
-    -------
-    u               : solution (displacement), ndarray[float, (V * D)]
-    R               : residual vector evaluated at the solution, ndarray[float, (V * D)]
-    element_batches : element batches with updated internal state variables
-    """
+def preprocess_bvp_update(
+    previous: PreprocessedBVP,
+    vertices_vd,
+    element_batches,
+    boundary_conditions=None,
+    multipoint_constraints=None,
+    global_values=None,
+    contact_batch_generator=None,
+    u_0_g=None,
+):
     if boundary_conditions is None:
         boundary_conditions = []
     if multipoint_constraints is None:
@@ -1140,27 +1194,115 @@ def solve_bvp(
     if global_values is None:
         global_values = []
 
-    debug_info = NULL_DEBUG_INFO if debug_info is None else debug_info
+    if vertices_vd.ndim == 1:
+        vertices_vd = np.expand_dims(vertices_vd, axis=1)
 
-    (
-        ebc,
-        assembly_map_b,
-        constraint_system,
-        jacobian_nnz,
-        element_residual_func,
-        f_ext,
-    ) = preprocess_bvp(
+    V = vertices_vd.shape[0]
+    if V != previous.n_vertices:
+        raise ValueError("Dynamic BVP preprocess cannot change the number of vertices.")
+
+    element_batches, base_batch_count, contact_batch_index = _append_contact_batches(
+        element_batches, contact_batch_generator, u_0_g
+    )
+    if base_batch_count != previous.base_batch_count:
+        raise ValueError("Dynamic BVP preprocess cannot change the number of base batches.")
+    if contact_batch_index != previous.contact_batch_index:
+        raise ValueError("Dynamic BVP preprocess cannot add/remove the contact batch.")
+
+    _assert_same_batch_layout(previous, element_batches)
+
+    ebc = batch_to_collection(
         vertices_vd=vertices_vd,
         element_batches=element_batches,
-        element_residual_func=element_residual_func,
-        boundary_conditions=boundary_conditions,
-        multipoint_constraints=multipoint_constraints,
-        global_values=global_values,
-        contact_batch_generator=contact_batch_generator,
-        u_0_g=u_0_g,
+        dof_enumeration=previous.dof_enumeration,
     )
 
-    n_total_dofs = vertices_vd.shape[0] * ebc.U[0] + sum(global_values)
+    contact_connectivity_en = None
+    contact_topology_changed = False
+
+    if previous.contact_batch_index is not None:
+        i = previous.contact_batch_index
+        contact_connectivity_en = np.asarray(
+            element_batches[i].connectivity_en
+        ).copy()
+        contact_topology_changed = (
+            previous.contact_connectivity_en is None
+            or not np.array_equal(
+                contact_connectivity_en,
+                previous.contact_connectivity_en,
+            )
+        )
+    assembly_map_b = list(previous.assembly_map_b)
+    if previous.contact_batch_index is not None and contact_topology_changed:
+        i = previous.contact_batch_index
+        assembly_map_b[i] = mesh_to_sparse_assembly_map(
+            n_vertices=V,
+            cells=element_batches[i].connectivity_en,
+        )
+
+    jacobian_nnz = (
+        int(_calculate_jacobian_unique_nnz(ebc=ebc))
+        if contact_topology_changed
+        else previous.jacobian_nnz
+    )
+
+    constraint_system, f_ext = convert_boundary_conditions(
+        boundary_conditions=boundary_conditions,
+        vertices_vd=vertices_vd,
+        dof_enumeration=previous.dof_enumeration,
+        n_solution_components=ebc.U[0],
+        global_values=global_values,
+        multipoint_constraints=multipoint_constraints,
+    )
+
+    return PreprocessedBVP(
+        **{
+            **previous.__dict__,
+            "ebc": ebc,
+            "assembly_map_b": assembly_map_b,
+            "constraint_system": constraint_system,
+            "jacobian_nnz": jacobian_nnz,
+            "f_ext": f_ext,
+            "element_batches": element_batches,
+            "contact_connectivity_en": contact_connectivity_en,
+        }
+    )
+
+def preprocess_bvp(*args, **kwargs):
+    preprocessed = preprocess_bvp_initial(*args, **kwargs)
+    return (
+        preprocessed.ebc,
+        preprocessed.assembly_map_b,
+        preprocessed.constraint_system,
+        preprocessed.jacobian_nnz,
+        preprocessed.element_residual_func,
+        preprocessed.f_ext,
+    )
+
+def solve_preprocessed_bvp(
+    preprocessed: PreprocessedBVP,
+    vertices_vd,
+    u_0_g=None,
+    solver_options: SolverOptions = SolverOptions(),
+    plot_convergence: bool = False,
+    profile_memory: bool = False,
+    element_diagnostic_outputs: Callable | None = None,
+    debug_info: DebugInfo | None = None,
+    time_step: int = 0,
+):
+    debug_info = NULL_DEBUG_INFO if debug_info is None else debug_info
+
+    ebc = preprocessed.ebc
+    assembly_map_b = preprocessed.assembly_map_b
+    constraint_system = preprocessed.constraint_system
+    jacobian_nnz = preprocessed.jacobian_nnz
+    element_residual_func = preprocessed.element_residual_func
+    f_ext = preprocessed.f_ext
+    element_batches = list(preprocessed.element_batches)
+
+    # move the existing solve_bvp body from after preprocess_bvp(...) down here
+    # n_total_dofs = vertices_vd.shape[0] * ebc.U[0] + sum(global_values)
+    n_total_dofs = preprocessed.dof_enumeration.n_owned_dofs
 
     # If an initial guess was not provided, then use zeros
     if u_0_g is None:
@@ -1220,3 +1362,83 @@ def solve_bvp(
             plot_solver_info(opts=solver_options, info=info)
 
     return (u, residual, element_batches)
+
+
+def solve_bvp(
+    vertices_vd: np.ndarray[Any, np.dtype[np.floating[Any]]],
+    element_batches: list[ElementBatch],
+    element_residual_func: jax.tree_util.Partial,
+    boundary_conditions: List[DirichletBC | NeumannBC | PeriodicBC] | None = None,
+    multipoint_constraints: List[MultiPointConstraint] | None = None,
+    global_values: List[int] | None = None,
+    u_0_g: jnp.ndarray | None = None,
+    solver_options: SolverOptions = SolverOptions(),
+    plot_convergence: bool = False,
+    profile_memory: bool = False,
+    contact_batch_generator: Callable | None = None,
+    element_diagnostic_outputs: Callable | None = None,
+    debug_info: DebugInfo | None = None,
+    time_step: int = 0,
+) -> tuple[jnp.ndarray, jnp.ndarray, list[ElementBatch]]:
+    """
+    Solve a boundary value problem for static linear elasticity.
+
+    Parameters
+    ----------
+    vertices_vd          : vertices needed for all cells on the rank, ndarray[float, (V, D)]
+    element_batches      : batch of elements for this rank
+    element_residual_func: residual function emerging from weak form of governing equations
+    dirichlet_bcs        : Dirichlet boundary conditions, list[DirichletConstraint]
+    multipoint_constraints : Linear constraints between degrees of freedom, list[MultiPointConstraint]
+    global_values        : Length of list indicates number of global solution vector-values that will
+                           added to the global system (e.g. for periodic BCs). Each entry in the list
+                           indicates the number of components for each vector-value.
+    u_0_g                : initial guess for the solution, ndarray[float, (V * D)] or None (default, zeros will be used)
+    solver_options       : options for the linear/nonlinear solvers
+    plot_convergence     : indicates if the convergence history for the linear solver should be
+                           plotted via matplotlib as a figure
+    profile_memory       : indicates if GPU memory usage should be profiled, which will create *.prof
+                           files in the current directory
+
+    Returns
+    -------
+    u               : solution (displacement), ndarray[float, (V * D)]
+    R               : residual vector evaluated at the solution, ndarray[float, (V * D)]
+    element_batches : element batches with updated internal state variables
+    """
+    if boundary_conditions is None:
+        boundary_conditions = []
+    if multipoint_constraints is None:
+        multipoint_constraints = []
+    if global_values is None:
+        global_values = []
+
+    debug_info = NULL_DEBUG_INFO if debug_info is None else debug_info
+
+    preprocessed = preprocess_bvp_initial(
+        vertices_vd=vertices_vd,
+        element_batches=element_batches,
+        element_residual_func=element_residual_func,
+        boundary_conditions=boundary_conditions,
+        multipoint_constraints=multipoint_constraints,
+        global_values=global_values,
+        contact_batch_generator=contact_batch_generator,
+        u_0_g=u_0_g,
+    )
+
+    u, residual, solved_element_batches = solve_preprocessed_bvp(
+        preprocessed=preprocessed,
+        vertices_vd=vertices_vd,
+        u_0_g=u_0_g,
+        solver_options=solver_options,
+        plot_convergence=plot_convergence,
+        profile_memory=profile_memory,
+        element_diagnostic_outputs=element_diagnostic_outputs,
+        debug_info=debug_info,
+        time_step=time_step,
+    )
+
+    for i in range(len(element_batches)):
+        element_batches[i] = solved_element_batches[i]
+
+    return u, residual, element_batches

@@ -22,3 +22,6 @@ tests/output/
 tests/__pycache__/
 output/
 debug/
+scratch/
+docs/adr/
+GLOSSARY.md

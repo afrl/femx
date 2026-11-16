@@ -99,7 +99,7 @@ point_fiber_ids=np.concatenate(
     ]
 )
 
-ctx = build_newton_node_cloud_contact(
+ctx = build_warp_contact_context(
     points=points,
     point_diameters=point_diameters,
     contact_search_alpha=1,
@@ -107,7 +107,7 @@ ctx = build_newton_node_cloud_contact(
     point_fiber_ids=point_fiber_ids,
 )
 
-n0, n1, active, count = NewtonContactSearch(ctx,points)
+n0, n1, active, count = warp_contact_search(ctx,points)
 
 contact_cells = contact_batch(
     points=points,

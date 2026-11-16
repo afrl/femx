@@ -52,6 +52,16 @@ def read_free_jacobian_coo(f,ts,nl):
     free_dofs = np.setdiff1d(all_dofs,f[f'{p}dep_dofs'][:])
     return A[free_dofs,:][:, free_dofs]
 
+def get_num_nonlinear_solves(db_file):
+    pseudo_steps = [int(i.strip('ts_')) for i in list(db_file.keys())]
+    pseudo_steps.sort()
+    nl_steps = []
+    for t in pseudo_steps:
+        temp = [int(i.strip('nl_')) for i in list(db_file[f'ts_{t}'].keys())]
+        temp.sort()
+        nl_steps.append(temp[-1])
+    return np.array(nl_steps)
+
 def plot_Jac_cond(db_file,cond_metric=1, dense=False,ax=None, color='k', label=None):
     pseudo_steps = [int(i.strip('ts_')) for i in list(db_file.keys())]
     pseudo_steps.sort()

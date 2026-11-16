@@ -146,6 +146,9 @@ class ElementBatchCollection:
     constitutive_models: tuple[jax.tree_util.Partial, ...] = struct.field(
         pytree_node=False
     )
+    # Strain measure for each batch, length=B
+    # Note: static, not traced
+    strain_measures: tuple[StrainMeasure, ...] = struct.field(pytree_node=False)
 
     # --- Offsets / sizes into expanded arrays for slicing ---
 
@@ -282,13 +285,13 @@ class ElementBatchCollection:
                 return jax.lax.dynamic_slice(
                     self.weights,
                     start_indices=(self.weights_offsets[i],),
-                    slice_sizes=(self.E[i],),
-                )
+                    slice_sizes=(self.E[i] * self.Q[i],),
+                ).reshape((self.E[i], self.Q[i]))
             case _:  # Q
                 return jax.lax.dynamic_slice(
                     self.weights,
                     start_indices=(self.weights_offsets[i],),
-                    slice_sizes=(1,),
+                    slice_sizes=(self.Q[i],),
                 )
 
     @partial(jax.jit, static_argnames="i")
@@ -439,6 +442,9 @@ def batch_to_collection(
         # --- Callable functions ---
         constitutive_models=tuple(
             [b.constitutive_model for b in element_batches]
+        ),
+        strain_measures=tuple(
+            [StrainMeasure.from_value(b.strain_measure) for b in element_batches]
         ),
         # --- Offsets / sizes into expanded arrays for slicing ---
         EN_offsets=jnp.hstack(

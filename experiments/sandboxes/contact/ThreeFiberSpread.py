@@ -152,9 +152,11 @@ def run_threeFiberTow(
     y_shift: np.ndarray | None = None,
     z_shift: np.ndarray | None = None,
     debug_info: DebugInfo | NullDebugInfo = NULL_DEBUG_INFO,
+    # linear_solve_type: LinearSolverType = LinearSolverType.CG_JAX_SCIPY_W_INFO,
     linear_solve_type: LinearSolverType = LinearSolverType.SPSOLVE_PYPARDISO,
     damp_Newton_diag: float = 0.,
     solver_options: SolverOptions | None = None,
+    strain_measure: StrainMeasure = StrainMeasure.GREEN_LAGRANGE,
 ):
     """ """
     fabric, bcs = make_bundle(
@@ -171,7 +173,7 @@ def run_threeFiberTow(
     if solver_options is None:
         solver_options=SolverOptions(
             linear_solve_type=linear_solve_type,
-            nonlinear_max_iter=15,
+            nonlinear_max_iter=100,
             linear_max_iter=200,
             max_linear_displacement=min(min_dist,fabric.diameters[0])/4,
             max_backtracks=6,
@@ -267,6 +269,11 @@ args = {
         C_to_D_ratio               = 1.0,
         M_stiffness_to_E_ratio     = 0.0005,
         contact_search_alpha       = 1.4,
+        # contact_backend = ContactBackend.NEWTON_WARP,
+        # contact_backend = ContactBackend.JAX_HASH,
+        contact_backend = ContactBackend.AUTO,
+        # contact_backend = ContactBackend.SCIPY_KDTREE,
+        rigid_contact_max = 500,
     ),
 }
 

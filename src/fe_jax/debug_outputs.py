@@ -8,6 +8,8 @@ import h5py
 
 from .paths import get_debug_output
 
+from typing import Sequence
+
 class DebugOutputQuantities(Enum):
     NODE_RESIDUAL = auto()
     NODE_SOLUTION = auto()
@@ -21,7 +23,7 @@ class DebugOutputStage(Enum):
     NONLINEAR_SOLVE = auto()
     LINEAR_SOLVE = auto()
 
-type DebugFlags = list[tuple[DebugOutputQuantities, DebugOutputStage]]
+type DebugFlags = Sequence[tuple[DebugOutputQuantities, DebugOutputStage]]
 
 _active_groups: dict[DebugOutputQuantities, h5py.Group] = {}
 _active_stage: DebugOutputStage | None = None
@@ -121,6 +123,10 @@ class DebugInfo:
     flags: DebugFlags = struct.field(pytree_node = False)
     file: h5py.File   = struct.field(pytree_node = False)
 
+    def __post_init__(self):
+        if not isinstance(self.flags, tuple):
+            object.__setattr__(self, "flags", tuple(self.flags))
+
     def contains(self, quantity: DebugOutputQuantities) -> bool:
         return any(q == quantity for q,_ in self.flags)
 
@@ -159,4 +165,4 @@ def make_debug_info(
     flags: DebugFlags,
     filename: str,
 ) -> DebugInfo:
-    return DebugInfo(flags = flags, file = h5py.File(get_debug_output(filename),"w"))
+    return DebugInfo(flags = tuple(flags), file = h5py.File(get_debug_output(filename),"w"))
