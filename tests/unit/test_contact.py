@@ -37,67 +37,6 @@ def test_count_initial_contacts_counts_distinct_and_self_contacts():
 
     assert int(count) == 2
 
-
-# def test_merge_contact_cells_packs_valid_rows_before_sentinels():
-#     distinct_contacts = jnp.array(
-#         [
-#             [0, 1],
-#             [0, 0],
-#             [0, 0],
-#         ],
-#         dtype=jnp.uint64,
-#     )
-#     self_contacts = jnp.array(
-#         [
-#             [2, 3],
-#             [0, 0],
-#             [0, 0],
-#         ],
-#         dtype=jnp.uint64,
-#     )
-
-#     merged, n_contact, overflowed = merge_contact_cells(
-#         distinct_contacts=distinct_contacts,
-#         n_distinct=1,
-#         self_contacts=self_contacts,
-#         n_self=1,
-#         capacity=3,
-#     )
-
-#     np.testing.assert_array_equal(np.asarray(merged), np.array([[0, 1], [2, 3], [0, 0]], dtype=np.uint64))
-#     assert int(n_contact) == 2
-#     assert bool(overflowed) is False
-
-
-# def test_merge_contact_cells_flags_overflow():
-#     distinct_contacts = jnp.array(
-#         [
-#             [0, 1],
-#             [2, 3],
-#         ],
-#         dtype=jnp.uint64,
-#     )
-#     self_contacts = jnp.array(
-#         [
-#             [4, 5],
-#             [6, 7],
-#         ],
-#         dtype=jnp.uint64,
-#     )
-
-#     merged, n_contact, overflowed = merge_contact_cells(
-#         distinct_contacts=distinct_contacts,
-#         n_distinct=2,
-#         self_contacts=self_contacts,
-#         n_self=2,
-#         capacity=3,
-#     )
-
-#     np.testing.assert_array_equal(np.asarray(merged), np.array([[0, 1], [2, 3], [4, 5]], dtype=np.uint64))
-#     assert int(n_contact) == 3
-#     assert bool(overflowed) is True
-
-
 def test_distinct_fiber_node2node_finds_expected_pair():
     points = jnp.array(
         [

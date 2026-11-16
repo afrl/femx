@@ -1,5 +1,6 @@
 import numpy as np
 import jax.numpy as jnp 
+from .contact_types import ContactCapacityError
 
 def _validate_point_cloud(
     points: jnp.ndarray,
@@ -16,3 +17,14 @@ def _validate_point_cloud(
         raise ValueError("point_fiber_ids must have the same leading dimension as points")
 
     return points, point_fiber_ids
+
+def raise_if_contact_capacity_exhausted(
+    capacity: int,
+    count: int | jnp.ndarray,
+    capacity_exhausted: bool | jnp.ndarray,
+    backend_name: str = "Contact backend",
+):
+    if bool(capacity_exhausted):
+        raise ContactCapacityError(
+            f"{backend_name} capacity ({capacity}) exhausted: detected {int(count)} candidate contacts."
+        )

@@ -191,6 +191,14 @@ def __elastic_contact_truss_kernel(
 
     return stress_dd, jnp.array([])  # no internal state
 
+# Contact stiffness models
+contact_stiffness_constant            = __contact_stiffness_constant
+contact_stiffness_linear              = __contact_stiffness_linear
+contact_stiffness_piecewise_linear    = __contact_stiffness_piecewise_linear
+contact_stiffness_piecewise_quadratic = __contact_stiffness_piecewise_quadratic
+contact_stiffness_exponential         = __contact_stiffness_exponential
+contact_stiffness_tanh                = __contact_stiffness_tanh
+
 # Contact formulations to use for 1D contact elements
 elastic_contact_truss_constant            = jax.tree_util.Partial(__elastic_contact_truss_kernel, __contact_stiffness_constant)
 elastic_contact_truss_linear              = jax.tree_util.Partial(__elastic_contact_truss_kernel, __contact_stiffness_linear)
