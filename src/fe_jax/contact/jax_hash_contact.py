@@ -133,6 +133,8 @@ def pad_hash_cells(
     cell_capacity_buffer: float = 1.5,
 ):
     points_np = np.asarray(points)
+    if points_np.ndim == 2 and points_np.shape[1] == 2:
+        points_np = np.pad(points_np, ((0, 0), (0, 1)), mode="constant")
     domain_min = points_np.min(axis=0) - query_radius * pad_size
     domain_max = points_np.max(axis=0) + query_radius * pad_size
 
@@ -420,6 +422,11 @@ def estimate_jax_hash_rigid_contact_max(
     """Precompute rigid_contact_max once from the reference configuration."""
     domain_min, Nx, Ny, Nz, total_cells, C_max = grid_params
     points_f32 = jnp.asarray(points, dtype=jnp.float64)
+    if points_f32.ndim == 2 and points_f32.shape[1] == 2:
+        points_f32 = jnp.pad(points_f32, ((0, 0), (0, 1)), mode="constant")
+    domain_min = jnp.asarray(domain_min, dtype=jnp.float64)
+    if domain_min.ndim == 1 and domain_min.shape[0] == 2:
+        domain_min = jnp.pad(domain_min, (0, 1), mode="constant")
     point_fiber_ids = jnp.asarray(point_fiber_ids, dtype=jnp.int32)
     point_radii = jnp.asarray(0.5 * point_diameters, dtype=jnp.float64)
     N = points_f32.shape[0]
@@ -499,6 +506,8 @@ def jax_hash_contact_batch(
         dummy_pair = find_nonzero_length_dummy_contact_pair(points)
 
     points_f32 = jnp.asarray(points, dtype=jnp.float64)
+    if points_f32.ndim == 2 and points_f32.shape[1] == 2:
+        points_f32 = jnp.pad(points_f32, ((0, 0), (0, 1)), mode="constant")
     point_fiber_ids = jnp.asarray(point_fiber_ids, dtype=jnp.int32)
     point_radii = jnp.asarray(0.5 * point_diameters, dtype=jnp.float64)
     dummy_pair = jnp.asarray(dummy_pair, dtype=jnp.int32)
@@ -522,6 +531,8 @@ def jax_hash_contact_batch(
         )
 
     domain_min = jnp.asarray(domain_min, dtype=jnp.float64)
+    if domain_min.ndim == 1 and domain_min.shape[0] == 2:
+        domain_min = jnp.pad(domain_min, (0, 1), mode="constant")
 
     # Compute dynamic batch parameters if n_batch is not explicitly set
     if n_batch is None:

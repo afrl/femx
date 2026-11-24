@@ -6,7 +6,7 @@ import numpy as np
 from copy import deepcopy
 # jax.config.update("jax_disable_jit", True)
 import jax.extend
-
+from experiments.common.generators import create_fiber_bundle
 
 if __name__ == '__main__':
     print(jax.extend.backend.get_backend().platform)
@@ -78,87 +78,6 @@ def make_bc_schedule(
 
     return dyn_bcs, labels
 
-def make_single_fiber(
-    n_elements: int,
-    x0: tuple,
-    xN: tuple,
-    fiber_id: int,
-    cell_shift: int
-):
-    points = np.vstack(
-        (
-            np.linspace(x0[0], xN[0], n_elements + 1),
-            np.linspace(x0[1], xN[1], n_elements + 1),
-            np.linspace(x0[2], xN[2], n_elements + 1),
-        )
-    ).T
-    cells = np.array(
-        [[i + cell_shift, i + cell_shift + 1] for i in range(len(points) - 1)],
-        dtype=np.uint64,
-    )
-    fiber_ids = np.array([[fiber_id]] * len(points))
-    cell_ids = np.array([[fiber_id]] * len(cells))
-    y_ = np.linspace(-1,1,points.shape[0])
-    points[:,1] += 0.01*(1-y_)*(1+y_)
-    return points, cells, fiber_ids, cell_ids
-
-
-def make_bundle(n_elements: list[int], X0: list[tuple], XN: list[tuple],NeumannForce):
-    point_blocks = []
-    cell_blocks = []
-    point_id_blocks = []
-    cell_id_blocks = []
-
-    bcs = []
-
-    vertex_offset = 0
-
-    for fiber_id, (n_el, x0, xN) in enumerate(zip(n_elements, X0, XN)):
-        points_i, cells_i, point_ids_i, cell_ids_i = make_single_fiber(
-            n_elements=n_el,
-            x0=x0,
-            xN=xN,
-            fiber_id=fiber_id,
-            cell_shift=vertex_offset,
-        )
-
-        point_blocks.append(points_i)
-        cell_blocks.append(cells_i)
-        point_id_blocks.append(point_ids_i)
-        cell_id_blocks.append(cell_ids_i)
-        vertex_offset += points_i.shape[0]
-
-    points = np.vstack(point_blocks)
-    cells = np.vstack(cell_blocks)
-    point_ids = np.vstack(point_id_blocks).reshape(-1)
-    cell_ids = np.vstack(cell_id_blocks).reshape(-1)
-
-    fiber_offsets = np.concatenate(
-        [
-            [0],
-            np.cumsum([b.shape[0] for b in point_blocks])
-        ]
-    )
-    # fiber_offsets = np.cumsum([b.shape[0] for b in point_blocks])
-    bundle = VTMSBundle(
-        name="test",
-        n_fibers=len(n_elements),
-        material_id=np.array([0]),
-        diameter=np.array([0.1]),
-        points=points,
-        fiber_offsets=fiber_offsets,
-        # bundle_offsets=np.array([0, fiber_offsets.shape[0]]),
-    )
-    fabric = VTMSFabric(
-        name="test",
-        material_ids=np.array([0]),
-        diameters=np.array([0.1]),
-        points=points,
-        fiber_offsets=fiber_offsets,
-        bundle_offsets=np.array([0, fiber_offsets.shape[0]-1]),
-    )
-    return fabric
-
 def run_singleFiber(
     n_elements: list[int],
     X0: list[tuple],
@@ -171,7 +90,9 @@ def run_singleFiber(
     debug_info = None,
 ):
     """ """
-    fabric = make_bundle(n_elements=n_elements, X0=X0, XN=XN,NeumannForce=NeumannForce)
+    y_ = np.linspace(-1, 1, n_elements[0] + 1)
+    y_shift = 0.01 * (1 - y_) * (1 + y_)
+    fabric = create_fiber_bundle(n_elements=n_elements, X0=X0, XN=XN, y_shifts=y_shift)
     dyn_bcs, bc_labels = make_bc_schedule(fabric, NeumannForce)
     # for nf in NeumannForce:
     #     print(nf)
@@ -348,3 +269,11 @@ def nonlinear_solve_summary(strain_measures=('Linear','GreenLagrange', 'Logarith
     plt.savefig(f'scratch/CG_{el_data}_NonlinearSolves_vs_IncrementalLoad.png')
     plt.close()
 # nonlinear_solve_summary()
+
+
+
+if __name__ == '__main__':
+    X = run_singleFiber(**get_args())
+    u = np.load('output/experimentDirUpdate/SingleFiber_ExternalLoad.npy')
+    assert np.allclose(X[0],u,atol=1e-14), 'something went wrong in SingleFiber_ExternalLoad'
+    print('SingleFiber_ExternalLoad PASSED!')

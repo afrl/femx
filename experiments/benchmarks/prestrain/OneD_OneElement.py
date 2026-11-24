@@ -62,8 +62,8 @@ def run_1D(
     X: list[tuple],
     pseudoT:int,
     filename_base:str,
-    contact_params: ContactParams,
     pre_strain:float,
+    contact_params: ContactParams | None = None,
 ):
     """ """
     fabric = make_fabric(n_elements=n_elements, X=X)
@@ -97,14 +97,14 @@ def run_1D(
 args = {
     'n_elements':[1],
     'X':[[[0],[1]]],
-    'contact_params': ContactParams(
-        self_adjacency_block    = 10000,
-        contact_stiffness_model = __contact_stiffness_exponential,
-        D_stiffness_to_E_ratio  = 0.25,
-        contact_search_radius   = 0.2,
-        M_to_D_ratio            = 1.25,
-        M_stiffness_to_E_ratio  = 1.0/100.0
-    ),
+    # 'contact_params': ContactParams(
+    #     self_adjacency_block    = 10000,
+    #     contact_stiffness_model = __contact_stiffness_exponential,
+    #     D_stiffness_to_E_ratio  = 0.25,
+    #     contact_search_radius   = 0.2,
+    #     M_to_D_ratio            = 1.25,
+    #     M_stiffness_to_E_ratio  = 1.0/100.0
+    # ),
     'pseudoT':1,
     'filename_base':None,
 }

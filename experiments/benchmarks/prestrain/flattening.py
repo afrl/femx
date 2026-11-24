@@ -22,12 +22,12 @@ def make_fabric(n_elements: int):
     return fabric
 
 def run_2D_flattening(
-    n_elements: list[int],
-    pseudoT:int,
-    filename_base:str,
-    contact_params: ContactParams,
-    pre_strain:float,
-    debug_info: DebugInfo | NullDebugInfo = NullDebugInfo
+    n_elements: int,
+    pseudoT: int = 1,
+    filename_base: str | None = None,
+    contact_params: ContactParams | None = None,
+    pre_strain: float = 0.0,
+    debug_info: DebugInfo | NullDebugInfo = NULL_DEBUG_INFO,
 ):
     """ """
     fabric = make_fabric(n_elements=n_elements)
@@ -48,12 +48,9 @@ def run_2D_flattening(
         boundary_conditions=dyn_bcs,
         contact_options=contact_params,
         solver_options=SolverOptions(
-            linear_solve_type=LinearSolverType.CG_JAX_SCIPY_W_INFO,
-            # linear_solve_type=LinearSolverType.SPSOLVE_PYPARDISO,
-            # linear_precond_type=PreconditionerType.JACOBI,
-            nonlinear_max_iter=9,
+            linear_solve_type=LinearSolverType.SPSOLVE_PYPARDISO,
+            nonlinear_max_iter=50,
             linear_max_iter=500,
-            # max_linear_displacement=min(min_dist/2,fabric.diameters[0]/2),
         ),
         pseudotime_iters=pseudoT,
         filename_base=filename_base,
@@ -67,23 +64,16 @@ def run_2D_flattening(
 
 args = {
     'n_elements':10,
-    'contact_params': ContactParams(
-        self_adjacency_block    = 10000,
-        contact_stiffness_model = __contact_stiffness_exponential,
-        D_stiffness_to_E_ratio  = 0.25,
-        contact_search_radius   = 0.2,
-        M_to_D_ratio            = 1.25,
-        M_stiffness_to_E_ratio  = 1.0/100.0
-    ),
+    'contact_params': None,
     'pseudoT':1,
     'filename_base':None,
-    'debug_info':make_debug_info(
-        flags = [
-            (DebugOutputQuantities.NODE_SOLUTION,DebugOutputStage.NONLINEAR_SOLVE),
-            (DebugOutputQuantities.GLOBAL_JACOBIAN_COO,DebugOutputStage.NONLINEAR_SOLVE),
-        ],
-        filename = 'prestrain/test_global_jac_coo.h5'
-    )
+    # 'debug_info':make_debug_info(
+    #     flags = [
+    #         (DebugOutputQuantities.NODE_SOLUTION,DebugOutputStage.NONLINEAR_SOLVE),
+    #         (DebugOutputQuantities.GLOBAL_JACOBIAN_COO,DebugOutputStage.NONLINEAR_SOLVE),
+    #     ],
+    #     filename = 'prestrain/test_global_jac_coo.h5'
+    # )
 }
 
 def plot_nodes(fabric,file):
@@ -91,3 +81,12 @@ def plot_nodes(fabric,file):
     for k in list(file['ts_0'].keys())[1:]:
         plt.plot(*(fabric.points + file['ts_0'][k]['NODE_SOLUTION']['u'][:,:]).T,marker = 'x', label = k)
     plt.legend()
+
+if __name__ == "__main__":
+    run_2D_flattening(
+        n_elements=args['n_elements'],
+        pseudoT=args['pseudoT'],
+        filename_base=args['filename_base'],
+        contact_params=args['contact_params'],
+        pre_strain=0.01,
+    )

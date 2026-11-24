@@ -238,3 +238,37 @@ def test_jax_hash_explicit_node_batching_matches_unbatched():
     np.testing.assert_array_equal(pairs_auto, pairs_batched)
 
 
+def test_jax_hash_contact_2d_points():
+    np.random.seed(42)
+    N = 200
+    p_fiber0 = np.array([[x, x * (1 - x)] for x in np.linspace(0, 1, 100)])
+    p_fiber1 = np.array([[x, x * (1 - x) + 0.05] for x in np.linspace(0, 1, 100)])
+    points = np.vstack([p_fiber0, p_fiber1])
+    fiber_ids = np.repeat(np.array([0, 1]), 100)
+    diameters = np.full(N, 0.1)
+
+    scipy_cells = scipy_contact_batch(
+        points=points,
+        point_fiber_ids=fiber_ids,
+        adjacency_block=2,
+        point_diameters=diameters,
+        search2radius_ratio=1.5,
+    )
+
+    cells, active, count, exhausted = jax_hash_contact_batch(
+        points=points,
+        point_fiber_ids=fiber_ids,
+        adjacency_block=2,
+        point_diameters=diameters,
+        search2radius_ratio=1.5,
+    )
+
+    assert not bool(exhausted)
+    assert int(count) == scipy_cells.shape[0]
+
+    if scipy_cells.shape[0] > 0:
+        hash_pairs = set(tuple(p) for p in np.asarray(cells[active]))
+        scipy_pairs = set(tuple(p) for p in scipy_cells)
+        assert hash_pairs == scipy_pairs
+
+

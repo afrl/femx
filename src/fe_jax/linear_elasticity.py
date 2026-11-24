@@ -246,7 +246,10 @@ def linear_elasticity_residual(
 
     if is_required(constitutive_model, "internal_state_i"):
         constitutive_args.append(internal_state_qi)
-        in_axes.append(0)
+        if internal_state_qi.ndim >= 2 and internal_state_qi.shape[0] == eps_qdd.shape[0]:
+            in_axes.append(0)
+        else:
+            in_axes.append(None)
 
     constitutive_model_vmap = jax.vmap(constitutive_model, in_axes=tuple(in_axes))
     stress_qdd, new_internal_state_qi = constitutive_model_vmap(*constitutive_args)
@@ -400,7 +403,10 @@ def linear_truss_residual(
 
     if is_required(constitutive_model, "internal_state_i"):
         constitutive_args.append(internal_state_qi)
-        in_axes.append(0)
+        if internal_state_qi.ndim >= 2 and internal_state_qi.shape[0] == eps_qdd.shape[0]:
+            in_axes.append(0)
+        else:
+            in_axes.append(None)
 
     if is_required(constitutive_model, "x_nd"):
         constitutive_args.append(x_nd)

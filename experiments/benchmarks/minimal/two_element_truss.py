@@ -1,7 +1,7 @@
 import jax
 import jax.numpy as jnp
 import numpy as np
-from src.fe_jax import linear_elasticity
+from fe_jax import linear_elasticity
 jax.config.update("jax_disable_jit", True)
 
 u_Nd = jnp.array([[0,0],[0,-1732/150e3],[0,0]],dtype = jnp.float64)
@@ -39,13 +39,16 @@ for c in cells:
         W_q=W_q,
         material_params=material_params,
         constitutive_model = linear_elasticity.elastic_truss,
-        internal_state_qi=[]
+        internal_state_qi=jnp.array([])
     )[0]
     R_stiff = linear_elasticity.stiffness_residual(
         u_nd=u_nd,
         x_nd=x_nd,
+        dphi_dxi_qnp=dpx,
+        W_q=W_q,
         material_params=material_params,
-        internal_state_qi=[]
+        internal_state_qi=jnp.array([]),
+        constitutive_model=linear_elasticity.elastic_truss,
     )[0]
     F_const = F_const.at[c].add(R_const)
     F_stiff = F_stiff.at[c].add(R_stiff)

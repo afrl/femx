@@ -3,12 +3,12 @@ requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "fea-in-jax"
+name = "femx"
 version = "0.1.0"
 description = "Finite element analysis utilities written in JAX."
 readme = "README.md"
 requires-python = ">=3.10"
-license = { file = "LICENSE" }
+license = "Apache-2.0"
 dependencies = [
     "fenics-basix",
     "flax",
@@ -21,24 +21,38 @@ dependencies = [
     "mpi4py",
     "numba",
     "numpy",
+    "petsc4py",
     "psutil",
     "scipy",
+    "vtk",
 ]
 
 [project.optional-dependencies]
 cuda12 = [
-    "cupy-cuda12x",
     "jax[cuda12]",
+    "cupy-cuda12x",
+    "jztree[cuda12]",
 ]
 cuda13 = [
-    "cupy-cuda13x",
     "jax[cuda13]",
+    "cupy-cuda13x",
+    "jztree[cuda13]",
 ]
 dev = [
     "pytest",
 ]
 pardiso = [
     "pypardiso",
+]
+warp = [
+    "warp-lang",
+]
+amgx = [
+    "pyamgx",
+]
+contact = [
+    "newton",
+    "warp-lang",  
 ]
 
 [tool.setuptools.packages.find]
