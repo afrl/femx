@@ -63,13 +63,19 @@ def create_straight_fiber(
     if z_shift is None:
         z_shift = np.zeros(n_elements + 1)
 
-    points = np.vstack(
-        (
+    if len(x0) == 2:
+        coords = (
+            np.linspace(x0[0], xN[0], n_elements + 1) + x_shift,
+            np.linspace(x0[1], xN[1], n_elements + 1) + y_shift,
+        )
+    else:
+        coords = (
             np.linspace(x0[0], xN[0], n_elements + 1) + x_shift,
             np.linspace(x0[1], xN[1], n_elements + 1) + y_shift,
             np.linspace(x0[2], xN[2], n_elements + 1) + z_shift,
         )
-    ).T
+
+    points = np.vstack(coords).T
 
     cells = np.array(
         [[i + cell_shift, i + cell_shift + 1] for i in range(len(points) - 1)],

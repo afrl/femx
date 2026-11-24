@@ -117,12 +117,15 @@ def run_threeFiberTow(
         materials=[VTMSFiberMaterial(id=0, E=E, A=A)],
         boundary_conditions=bcs,
         contact_options= ContactParams(
-            self_adjacency_block    = 10000,
-            contact_stiffness_model = __contact_stiffness_exponential,
-            D_stiffness_to_E_ratio  = 0.25,
-            contact_search_radius   = contact_search_radius,
+            self_adjacency_block       = 10000,
+            contact_constitutive_model = elastic_contact_truss_exponential,
+            D_stiffness_to_E_ratio     = 0.25,
+            # contact_search_radius   = contact_search_radius,
+            contact_search_alpha       = 2.5,
             M_to_D_ratio            = 1.25,
-            M_stiffness_to_E_ratio  = 1.0/100.0
+            C_to_D_ratio               = 1.0,
+            M_stiffness_to_E_ratio  = 1.0/100.0,
+            contact_backend = ContactBackend.SCIPY_KDTREE,
         ),
         solver_options=SolverOptions(
             # linear_solve_type=LinearSolverType.CG_JAX_SCIPY_W_INFO,
@@ -139,10 +142,15 @@ def run_threeFiberTow(
 
     return u,fabric
 
-u,f = run_threeFiberTow(
-    n_elements=[10, 10, 10],
-    X0=[[0, 0, -1], [0.1, 0, -1], [0.5 * 0.1, np.sqrt(3) / 2 * 0.1, -1]],
-    XN=[[0, 0, 1], [0.1, 0, 1], [0.5 * 0.1, np.sqrt(3) / 2 * 0.1, 1]],
-    contact_search_radius=0.25,
-    NeumannForce = 1E5
-)
+if __name__ == '__main__':
+    u,f = run_threeFiberTow(
+        n_elements=[10, 10, 10],
+        X0=[[0, 0, -1], [0.1, 0, -1], [0.5 * 0.1, np.sqrt(3) / 2 * 0.1, -1]],
+        XN=[[0, 0, 1], [0.1, 0, 1], [0.5 * 0.1, np.sqrt(3) / 2 * 0.1, 1]],
+        contact_search_radius=0.25,
+        NeumannForce = 1E5,
+        filename_base = 'test_ThreeFiberTow'
+    )
+    u_saved = np.load('output/experimentDirUpdate/ThreeFiberTow.npy')
+    assert np.allclose(u,u_saved,atol=1e-14), 'something went wrong in ThreeFiberTow'
+    print('ThreeFiberTow PASSED!')

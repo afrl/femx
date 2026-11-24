@@ -1,25 +1,26 @@
 from fe_jax.helper import *
 import matplotlib.pyplot as plt
 import numpy as np
+from experiments.common.generators import create_fiber_bundle
 # jax.config.update("jax_disable_jit", True)
 
 
-def make_fabric(n_elements: int):
-    x = np.linspace(0,1,n_elements+1)
-    y = x*(1-x)/2.5
+# def make_fabric(n_elements: int):
+#     x = np.linspace(0,1,n_elements+1)
+#     y = x*(1-x)/2.5
 
-    points = np.vstack([x,y]).T
-    fiber_offsets = np.concatenate([[0],np.cumsum([points.shape[0]])])
+#     points = np.vstack([x,y]).T
+#     fiber_offsets = np.concatenate([[0],np.cumsum([points.shape[0]])])
 
-    fabric = VTMSFabric(
-        name="test",
-        material_ids=np.array([0]),
-        diameters=np.array([0.1]),
-        points=points,
-        fiber_offsets=fiber_offsets,
-        bundle_offsets=np.array([0, fiber_offsets.shape[0]-1]),
-    )
-    return fabric
+#     fabric = VTMSFabric(
+#         name="test",
+#         material_ids=np.array([0]),
+#         diameters=np.array([0.1]),
+#         points=points,
+#         fiber_offsets=fiber_offsets,
+#         bundle_offsets=np.array([0, fiber_offsets.shape[0]-1]),
+#     )
+#     return fabric
 
 def run_2D_flattening(
     n_elements: int,
@@ -30,7 +31,14 @@ def run_2D_flattening(
     debug_info: DebugInfo | NullDebugInfo = NULL_DEBUG_INFO,
 ):
     """ """
-    fabric = make_fabric(n_elements=n_elements)
+    x = np.linspace(0,1,n_elements+1)
+    y_shift = x * (1 - x) / 2.5
+    fabric = create_fiber_bundle(
+        n_elements=n_elements,
+        X0=[(0.0, 0.0)],
+        XN=[(1.0, 0.0)],
+        y_shifts=y_shift,
+    )
     dyn_bcs = [[
         DirichletBC(index=0,          component=0, value=0, bc_type=BCType.NODE),
         DirichletBC(index=0,          component=1, value=0, bc_type=BCType.NODE),
